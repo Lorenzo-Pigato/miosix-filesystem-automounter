@@ -47,6 +47,7 @@
 #include "drivers/serial.h"
 #include "drivers/sd_stm32f2_f4_f7.h"
 #include "board_settings.h"
+#include "filesystem/automounter/sd_automounter.h"
 
 namespace miosix {
 
@@ -85,6 +86,30 @@ void IRQbspInit()
             defaultSerialFlowctrl,defaultSerialDma));
 }
 
+static bool sdCardPresent()
+{
+    static unsigned char buf[512];
+    intrusive_ref_ptr<SDIODriver> sd = SDIODriver::instance();
+
+    // Backoff: try to reinit at most once every ~5 seconds when card is absent
+    static int reinitCountdown = 0;
+    if (reinitCountdown > 0)
+        reinitCountdown--;
+
+    ssize_t r = sd->readBlock(buf, sizeof(buf), 0);
+    if (r == 512) return true;
+
+    if (reinitCountdown == 0)
+    {
+        sd->ioctl(IOCTL_REINIT, nullptr);
+        reinitCountdown = 7; // poll 800ms ~ 5.6s
+    }
+
+    // dopo reinit riprovo una volta
+    r = sd->readBlock(buf, sizeof(buf), 0);
+    return r == 512;
+}
+
 void bspInit2()
 {
     #ifdef WITH_FILESYSTEM
@@ -95,7 +120,11 @@ void bspInit2()
         auxSerialRtsPin,auxSerialCtsPin>(
             auxSerial,auxSerialSpeed,auxSerialFlowctrl,auxSerialDma));
     #else //AUX_SERIAL
-    basicFilesystemSetup(SDIODriver::instance());
+    // basicFilesystemSetup(SDIODriver::instance());
+    basicFilesystemSetup(intrusive_ref_ptr<Device>());
+    SdAutomounter::instance().configure(&sdCardPresent, 800, 3);
+    SdAutomounter::instance().enable();
+    printf("[+] SD card automounter enabled\n");
     #endif //AUX_SERIAL
     #endif //WITH_FILESYSTEM
 }

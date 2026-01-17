@@ -1265,13 +1265,20 @@ static void initSDIOPeripheral()
         sdCMD::mode(Mode::ALTERNATE);
         sdCMD::alternateFunction(12);
         #endif
-    
-        #if (defined(_ARCH_CORTEXM7_STM32F7) || defined(_ARCH_CORTEXM7_STM32H7)) && SD_SDMMC==2
-        IRQregisterIrq(lock,DMA2_Stream0_IRQn,SDDMAirqImpl);
-        #else
-        IRQregisterIrq(lock,DMA2_Stream3_IRQn,SDDMAirqImpl);
-        #endif
-        IRQregisterIrq(lock,SDIO_IRQn,SDirqImpl);
+
+        static bool irqsRegistered = false;
+
+        if (!irqsRegistered) 
+        {
+            #if (defined(_ARCH_CORTEXM7_STM32F7) || defined(_ARCH_CORTEXM7_STM32H7)) && SD_SDMMC==2
+            IRQregisterIrq(lock,DMA2_Stream0_IRQn,SDDMAirqImpl);
+            #else
+            IRQregisterIrq(lock,DMA2_Stream3_IRQn,SDDMAirqImpl);
+            #endif
+            IRQregisterIrq(lock,SDIO_IRQn,SDirqImpl);
+
+            irqsRegistered = true;
+        }
     }
     
     SDIO->POWER=0; //Power off state
@@ -1499,89 +1506,117 @@ ssize_t SDIODriver::writeBlock(const void* buffer, size_t size, off_t where)
     return -EBADF;
 }
 
-int SDIODriver::ioctl(int cmd, void* arg)
+namespace
+{
+
+    bool sdioReinitLocked(SDIODriver *self)
+    {
+        initSDIOPeripheral();
+
+        // This is more important than it seems, since CMD55 requires the card's RCA
+        // as argument. During initalization, after CMD0 the card has an RCA of zero
+        // so without this line ACMD41 will fail and the card won't be initialized.
+        Command::setRca(0);
+
+        // Send card reset command
+        CmdResult r = Command::send(Command::CMD0, 0);
+        if (r.validateError() == false) return false;
+
+        cardType = detectCardType();
+        if (cardType == Invalid) return false;          // Card detect failed
+        if (cardType == MMC) return false;              //MMC cards currently unsupported
+
+        // Now give an RCA to the card. In theory we should loop and enumerate all
+        // the cards but this driver supports only one card.
+        r = Command::send(Command::CMD2, 0);
+        // CMD2 sends R2 response, whose CMDINDEX field is wrong
+        if (r.getError() != CmdResult::Ok && r.getError() != CmdResult::RespNotMatch)
+        {
+            r.validateError();
+            return false;
+        }
+
+        r = Command::send(Command::CMD3, 0);
+        if (r.validateR6Response() == false) return false;
+        
+        Command::setRca(r.getResponse() >> 16);
+        if (Command::getRca() == 0)
+        {
+            // RCA=0 can't be accepted, since it is used to deselect cards
+            DBGERR("RCA=0 is invalid\n");
+            return false;
+        }
+
+        // Lastly, try selecting the card and configure the latest bits
+        {
+            #ifndef SD_KEEP_CARD_SELECTED
+            CardSelector selector;
+            if (selector.succeded() == false) return false;
+            #else  //SD_KEEP_CARD_SELECTED
+            // Select card here, and keep it selected indefinitely
+            r = Command::send(Command::CMD7, Command::getRca() << 16);
+            if (r.validateR1Response() == false) return false;
+            #endif //SD_KEEP_CARD_SELECTED
+
+            // Get status
+            r = Command::send(Command::CMD13, Command::getRca() << 16);
+            if (r.validateR1Response() == false) return false;
+            if (r.getState() != 4)
+            {
+                DBGERR("CMD7 was not able to select card\n");
+                return false;
+            }
+
+            #ifndef SD_ONE_BIT_DATABUS
+            r = Command::send(Command::ACMD6, 2);
+            if (r.validateR1Response() == false) return false;
+            #endif
+
+            if (cardType != SDHC)
+            {
+                r = Command::send(Command::CMD16, 512);
+                if (r.validateR1Response() == false) return false;
+            }
+        }
+
+        // Now that card is initialized, perform self calibration of maximum
+        // possible read/write speed. This as a side effect enables 4bit bus width.
+
+        // Note: do NOT calibrate clock speed here.
+        // Reinit is used for hotplug recovery and it is 
+        // sufficient to restore a defined card state. 
+        // Calibration can be performed later
+
+        //ClockController::calibrateClockSpeed(self);
+        return true;
+    }
+
+} // anonymous namespace
+
+int SDIODriver::ioctl(int cmd, void *arg)
 {
     DBG("SDIODriver::ioctl()\n");
-    if(cmd!=IOCTL_SYNC) return -ENOTTY;
     Lock<KernelMutex> l(mutex);
-    //Note: no need to select card, since status can be queried even with card
-    //not selected.
-    return waitForCardReady() ? 0 : -EFAULT;
+
+    switch (cmd)
+    {
+    case IOCTL_SYNC:
+        // Note: no need to select card, since status can be queried even with card
+        // not selected.
+        return waitForCardReady() ? 0 : -EFAULT;
+
+    case IOCTL_REINIT:
+        return sdioReinitLocked(this) ? 0 : -EFAULT;
+
+    default:
+        return -ENOTTY;
+    }
 }
 
 SDIODriver::SDIODriver() : Device(Device::BLOCK)
 {
-    initSDIOPeripheral();
-
-    // This is more important than it seems, since CMD55 requires the card's RCA
-    // as argument. During initalization, after CMD0 the card has an RCA of zero
-    // so without this line ACMD41 will fail and the card won't be initialized.
-    Command::setRca(0);
-
-    //Send card reset command
-    CmdResult r=Command::send(Command::CMD0,0);
-    if(r.validateError()==false) return;
-
-    cardType=detectCardType();
-    if(cardType==Invalid) return; //Card detect failed
-    if(cardType==MMC) return; //MMC cards currently unsupported
-
-    // Now give an RCA to the card. In theory we should loop and enumerate all
-    // the cards but this driver supports only one card.
-    r=Command::send(Command::CMD2,0);
-    //CMD2 sends R2 response, whose CMDINDEX field is wrong
-    if(r.getError()!=CmdResult::Ok && r.getError()!=CmdResult::RespNotMatch)
-    {
-        r.validateError();
-        return;
-    }
-    r=Command::send(Command::CMD3,0);
-    if(r.validateR6Response()==false) return;
-    Command::setRca(r.getResponse()>>16);
-    DBG("Got RCA=%u\n",Command::getRca());
-    if(Command::getRca()==0)
-    {
-        //RCA=0 can't be accepted, since it is used to deselect cards
-        DBGERR("RCA=0 is invalid\n");
-        return;
-    }
-
-    //Lastly, try selecting the card and configure the latest bits
-    {
-        #ifndef SD_KEEP_CARD_SELECTED
-        CardSelector selector;
-        if(selector.succeded()==false) return;
-        #else //SD_KEEP_CARD_SELECTED
-        //Select card here, and keep it selected indefinitely
-        r=Command::send(Command::CMD7,Command::getRca()<<16);
-        if(r.validateR1Response()==false) return;
-        #endif //SD_KEEP_CARD_SELECTED
-
-        r=Command::send(Command::CMD13,Command::getRca()<<16);//Get status
-        if(r.validateR1Response()==false) return;
-        if(r.getState()!=4) //4=Tran state
-        {
-            DBGERR("CMD7 was not able to select card\n");
-            return;
-        }
-
-        #ifndef SD_ONE_BIT_DATABUS
-        r=Command::send(Command::ACMD6,2);   //Set 4 bit bus width
-        if(r.validateR1Response()==false) return;
-        #endif //SD_ONE_BIT_DATABUS
-
-        if(cardType!=SDHC)
-        {
-            r=Command::send(Command::CMD16,512); //Set 512Byte block length
-            if(r.validateR1Response()==false) return;
-        }
-    }
-
-    // Now that card is initialized, perform self calibration of maximum
-    // possible read/write speed. This as a side effect enables 4bit bus width.
-    ClockController::calibrateClockSpeed(this);
-
-    DBG("SDIO init: Success\n");
+    Lock<KernelMutex> l(mutex);
+    if (sdioReinitLocked(this)) DBG("SDIO init: Success\n");
 }
 
 } //namespace miosix
