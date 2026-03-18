@@ -89,6 +89,11 @@ namespace miosix {
 // always left undefined otherwise
 #ifdef WITH_FILESYSTEM
 
+/// \def WITH_AUTOMOUNTER
+/// Allows to enable/disable filesystem automounter support to save code size
+/// By default it is defined (filesystem automounter is enabled)
+#define WITH_AUTOMOUNTER
+
 /// \def WITH_DEVFS
 /// Allows to enable/disable DevFs support to save code size
 /// By default it is defined (DevFs is enabled)

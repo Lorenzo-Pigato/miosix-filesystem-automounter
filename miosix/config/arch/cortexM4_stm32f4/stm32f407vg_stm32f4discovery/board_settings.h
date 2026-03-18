@@ -102,6 +102,64 @@ using auxSerialCtsPin = Gpio<PA,0>;
 static const unsigned char sdVoltage=30; //Board powered @ 3.0V
 #define SD_ONE_BIT_DATABUS //Can't use 4 bit databus due to pin conflicts
 
+//
+// SD automounter options
+//
+// Detection mode selector:
+// - 0: SDIO software probing
+// - 1: Hardware card-detect pin (CD)
+#ifndef WITH_SD_CD_PIN
+#define WITH_SD_CD_PIN 0
+#endif
+
+#if WITH_SD_CD_PIN!=0 && WITH_SD_CD_PIN!=1
+#error "SD_AUTOMOUNTER_HARDWARE must be 0 (SDIO) or 1 (CD pin)"
+#endif
+
+// Hardware CD logic configuration.
+#define SD_AUTOMOUNTER_CD_ACTIVE_LOW  0
+#define SD_AUTOMOUNTER_CD_ACTIVE_HIGH 1
+#ifndef SD_AUTOMOUNTER_CD_POLARITY
+#define SD_AUTOMOUNTER_CD_POLARITY SD_AUTOMOUNTER_CD_ACTIVE_LOW
+#endif
+
+// Hardware CD input mode.
+#define SD_AUTOMOUNTER_CD_PULL_NONE  0
+#define SD_AUTOMOUNTER_CD_PULL_UP    1
+#define SD_AUTOMOUNTER_CD_PULL_DOWN  2
+#ifndef SD_AUTOMOUNTER_CD_PULL
+#define SD_AUTOMOUNTER_CD_PULL SD_AUTOMOUNTER_CD_PULL_UP
+#endif
+
+// Optional debug logs for automounter internals.
+// 0 = disabled (default), 1 = enabled.
+#ifndef SD_AUTOMOUNTER_DEBUG_LOG
+#define SD_AUTOMOUNTER_DEBUG_LOG 0
+#endif
+
+// Optional short form to configure the CD pin with one macro:
+// #define SD_AUTOMOUNTER_CD_GPIO Gpio<PC,0>
+//
+// Legacy form (still supported):
+// #define SD_AUTOMOUNTER_CD_PORT PC
+// #define SD_AUTOMOUNTER_CD_PIN  0
+#if WITH_SD_CD_PIN
+#if defined(SD_AUTOMOUNTER_CD_GPIO)
+using sdAutomounterCardDetectPin = SD_AUTOMOUNTER_CD_GPIO;
+#elif defined(SD_AUTOMOUNTER_CD_PORT) && defined(SD_AUTOMOUNTER_CD_PIN)
+using sdAutomounterCardDetectPin = Gpio<SD_AUTOMOUNTER_CD_PORT, SD_AUTOMOUNTER_CD_PIN>;
+#else
+class SdAutomounterInvalidCdPin
+{
+public:
+    static void mode(Mode) {}
+    static int value() { return 0; }
+};
+using sdAutomounterCardDetectPin = SdAutomounterInvalidCdPin;
+#error "Define SD_AUTOMOUNTER_CD_GPIO (recommended) or SD_AUTOMOUNTER_CD_PORT+SD_AUTOMOUNTER_CD_PIN when SD_AUTOMOUNTER_HARDWARE is 1"
+#endif
+#endif
+
 /**
  * \}
  */

@@ -49,6 +49,12 @@
 #include "board_settings.h"
 #include "filesystem/automounter/sd_automounter.h"
 
+#if SD_AUTOMOUNTER_DEBUG_LOG
+#define SD_AUTO_BSP_LOG(fmt, ...) printf("[SdAutomounter/BSP] " fmt, ##__VA_ARGS__)
+#else
+#define SD_AUTO_BSP_LOG(fmt, ...) do { } while(0)
+#endif
+
 namespace miosix {
 
 typedef Gpio<PD,4>  cs43l22reset;
@@ -70,10 +76,12 @@ void IRQbspInit()
     GPIOD->OSPEEDR=0xaaaaaaaa;
     GPIOE->OSPEEDR=0xaaaaaaaa;
     GPIOH->OSPEEDR=0xaaaaaaaa;
+    
     _led::mode(Mode::OUTPUT);
     ledOn();
     delayMs(100);
     ledOff();
+
     // On stm32f4discovery some of the SDIO pins conflict with the
     // audio output chip, so keep it permanently reset to avoid issues
     cs43l22reset::mode(Mode::OUTPUT);
@@ -84,10 +92,25 @@ void IRQbspInit()
         defaultSerialRtsPin,defaultSerialCtsPin>(
             defaultSerial,defaultSerialSpeed,
             defaultSerialFlowctrl,defaultSerialDma));
+
+    #if defined(WITH_AUTOMOUNTER) && WITH_SD_CD_PIN
+    #if SD_AUTOMOUNTER_CD_PULL==SD_AUTOMOUNTER_CD_PULL_UP
+    sdAutomounterCardDetectPin::mode(Mode::INPUT_PULL_UP);
+    #elif SD_AUTOMOUNTER_CD_PULL==SD_AUTOMOUNTER_CD_PULL_DOWN
+    sdAutomounterCardDetectPin::mode(Mode::INPUT_PULL_DOWN);
+    #elif SD_AUTOMOUNTER_CD_PULL==SD_AUTOMOUNTER_CD_PULL_NONE
+    sdAutomounterCardDetectPin::mode(Mode::INPUT);
+    #else
+    #error "Invalid SD_AUTOMOUNTER_CD_PULL value"
+    #endif
+    #endif
 }
 
-static bool sdCardPresent()
+#ifdef WITH_AUTOMOUNTER
+#if WITH_SD_CD_PIN==0
+static bool sdCardPresentBySdio()
 {
+    // SDIODriver::readBlock requires a full 512-byte block
     static unsigned char buf[512];
     intrusive_ref_ptr<SDIODriver> sd = SDIODriver::instance();
 
@@ -102,30 +125,67 @@ static bool sdCardPresent()
     if (reinitCountdown == 0)
     {
         sd->ioctl(IOCTL_REINIT, nullptr);
-        reinitCountdown = 7; // poll 800ms ~ 5.6s
+        reinitCountdown = 7; // ~5.6s at 200ms poll
     }
 
-    // dopo reinit riprovo una volta
-    r = sd->readBlock(buf, sizeof(buf), 0);
-    return r == 512;
+    return false;
 }
+#endif
+
+#if WITH_SD_CD_PIN
+static bool sdCardPresentByCd()
+{
+    bool cd = sdAutomounterCardDetectPin::value() != 0;
+    #if SD_AUTOMOUNTER_CD_POLARITY==SD_AUTOMOUNTER_CD_ACTIVE_LOW
+    return !cd;
+    #elif SD_AUTOMOUNTER_CD_POLARITY==SD_AUTOMOUNTER_CD_ACTIVE_HIGH
+    return cd;
+    #else
+    #error "Invalid SD_AUTOMOUNTER_CD_POLARITY value"
+    #endif
+}
+#endif
+#endif //WITH_AUTOMOUNTER
 
 void bspInit2()
 {
     #ifdef WITH_FILESYSTEM
+    #ifdef WITH_AUTOMOUNTER
+    {
+        intrusive_ref_ptr<SDIODriver> sd = SDIODriver::instance();
+        intrusive_ref_ptr<DevFs> devFs=basicFilesystemSetup(intrusive_ref_ptr<Device>());
+        #ifdef AUX_SERIAL
+        devFs->addDevice(AUX_SERIAL,
+            STM32SerialBase::get<auxSerialTxPin,auxSerialRxPin,
+            auxSerialRtsPin,auxSerialCtsPin>(
+                auxSerial,auxSerialSpeed,auxSerialFlowctrl,auxSerialDma));
+        #endif //AUX_SERIAL
+
+        #if WITH_SD_CD_PIN
+        SdAutomounter::instance().configure(sd, &sdCardPresentByCd, 200, 3);
+        SD_AUTO_BSP_LOG("Detection mode: hardware CD\n");
+        #else
+        SdAutomounter::instance().configure(sd, &sdCardPresentBySdio, 200, 3);
+        SD_AUTO_BSP_LOG("Detection mode: SDIO software probing\n");
+        #endif
+
+        SdAutomounter::instance().enable();
+        SD_AUTO_BSP_LOG("SD card automounter enabled\n");
+    }
+
+    #else //WITH_AUTOMOUNTER
     #ifdef AUX_SERIAL
-    intrusive_ref_ptr<DevFs> devFs=basicFilesystemSetup(SDIODriver::instance());
-    devFs->addDevice(AUX_SERIAL,
-        STM32SerialBase::get<auxSerialTxPin,auxSerialRxPin,
-        auxSerialRtsPin,auxSerialCtsPin>(
-            auxSerial,auxSerialSpeed,auxSerialFlowctrl,auxSerialDma));
+    {
+        intrusive_ref_ptr<DevFs> devFs=basicFilesystemSetup(SDIODriver::instance());
+        devFs->addDevice(AUX_SERIAL,
+            STM32SerialBase::get<auxSerialTxPin,auxSerialRxPin,
+            auxSerialRtsPin,auxSerialCtsPin>(
+                auxSerial,auxSerialSpeed,auxSerialFlowctrl,auxSerialDma));
+    }
     #else //AUX_SERIAL
-    // basicFilesystemSetup(SDIODriver::instance());
-    basicFilesystemSetup(intrusive_ref_ptr<Device>());
-    SdAutomounter::instance().configure(&sdCardPresent, 800, 3);
-    SdAutomounter::instance().enable();
-    printf("[+] SD card automounter enabled\n");
+    basicFilesystemSetup(SDIODriver::instance());
     #endif //AUX_SERIAL
+    #endif //WITH_AUTOMOUNTER
     #endif //WITH_FILESYSTEM
 }
 

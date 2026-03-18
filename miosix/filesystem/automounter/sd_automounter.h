@@ -9,24 +9,23 @@
 
 #pragma once
 
-#include "miosix.h"
-
 #ifdef WITH_FILESYSTEM
 
 #include <atomic>
 #include "kernel/sync.h"
+#include "filesystem/devfs/devfs.h"
 
 namespace miosix
 {
 
     /**
-     * \brief Polling-based SD card presence monitor (dummy automounter).
+     * \brief Polling-based SD card automounter.
      *
-     * This module only detects insertion/removal using polling and prints events.
-     * It is intentionally filesystem-agnostic in this dummy phase.
+     * This module periodically checks whether an SD card is present, applies a
+     * simple debounce filter, and mounts/unmounts /sd on insertion/removal.
      *
      * The BSP must provide a CardDetectFn function that returns true if the card
-     * is present. The module applies a simple debounce filter.
+     * is present.
      */
     class SdAutomounter
     {
@@ -41,11 +40,16 @@ namespace miosix
         /**
          * Configure. Call once from BSP before enable().
          *
+         * \param storage storage device used to mount the filesystem
          * \param detect card detect function (polling). If nullptr -> always present.
          * \param pollMs polling period (ms)
-         * \param debounceSamples consecutive equal samples to accept a change
+         * \param requiredStableSamples consecutive number of stable samples to accept a change
          */
-        void configure(CardDetectFn detect, int pollMs = 200, int debounceSamples = 3);
+        void configure(
+                        intrusive_ref_ptr<Device> storage, 
+                        CardDetectFn detect,
+                        int pollMs = 200, 
+                        int requiredStableSamples = 3);
 
         /**
          * Enable/disable at runtime.
@@ -60,18 +64,78 @@ namespace miosix
         SdAutomounter(const SdAutomounter &);
         SdAutomounter &operator=(const SdAutomounter &);
 
+        /**
+         * \brief Thread entry point for the SD automounter worker.
+         *
+         * Miosix `Thread::create()` expects a static member function,
+         * while `run()` is a non-static member function that needs to
+         * access instance members.
+         *
+         * This helper converts the generic thread argument back to an
+         * SdAutomounter object and starts its main loop.
+         *
+         * \param arg pointer to the SdAutomounter instance
+         * \return nullptr when the worker thread exits
+         */
         static void *threadTrampoline(void *arg);
+        
         void run();
 
-        bool readPresentRaw() const;
-        bool updateDebounced(bool raw);
+        /**
+         * \brief detect if the card is physically present with the
+         * provided `detect` function, if any.
+         *
+         * Boards equipped with a card detection pin should provide a
+         * `detect` function that reads it.
+         *
+         * If no `detect` function is provided, this method assumes
+         * that the card is always physically inserted.
+         */
+        bool detectPhysicalPresence() const;
 
-        void onInserted();
-        void onRemoved();
+        /**
+         * \brief Integration-based debounce filter.
+         *
+         * Each sample increments an internal counter towards the sampled direction
+         * instead of resetting it on a single glitch.  
+         * The debounced state flips only when the counter saturates, providing
+         * better noise tolerance than a simpler debounce filter implementation.
+         *
+         * \param raw current raw card-detect reading
+         * \return debounced card-present state
+         */
+        bool checkStablePresence(bool raw);
 
+        /**
+         * \brief Ensure that the /sd mount point exists.
+         *
+         * This method resolves the root filesystem and creates the "sd"
+         * directory in it if needed. If the directory already exists, that
+         * condition is treated as success.
+         *
+         * \return true if /sd exists or is created successfully, false otherwise
+         */
+        bool ensureSdMountpoint();
+        bool mountSd();
+        void unmountSd();
+        bool tryMountFat32(intrusive_ref_ptr<FileBase>& disk);
+        bool tryMountLittleFs(intrusive_ref_ptr<FileBase>& disk);
+        
+        /**
+         * \brief Open the configured storage device.
+         *
+         * This method opens the underlying block device used for SD mounting
+         * and stores the resulting handle in the output parameter.
+         *
+         * \param disk output reference that receives the opened device handle
+         * \return 0 on success, or a negative error code on failure
+         */
+        int openDisk(intrusive_ref_ptr<FileBase>& disk);
+
+        intrusive_ref_ptr<Device> storage;
         CardDetectFn detect;
         int pollMs;
-        int debounceSamples;
+        int requiredStableSamples;
 
         std::atomic<bool> enabled;
         std::atomic<bool> configured;
@@ -82,10 +146,10 @@ namespace miosix
         Thread *worker;
 
         // debounce state
-        bool lastRaw;
         bool stablePresent;
         bool lastPresent;
-        int stableCount;
+        int samplesCount;
+        bool sdMounted;
     };
 
 } // namespace miosix
