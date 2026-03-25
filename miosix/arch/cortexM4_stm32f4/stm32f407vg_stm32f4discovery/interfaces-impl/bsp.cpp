@@ -49,10 +49,10 @@
 #include "board_settings.h"
 #include "filesystem/automounter/sd_automounter.h"
 
-#if SD_AUTOMOUNTER_DEBUG_LOG
-#define SD_AUTO_BSP_LOG(fmt, ...) printf("[SdAutomounter/BSP] " fmt, ##__VA_ARGS__)
+#if AUTOMOUNTER_DEBUG_LOG
+#define AUTOMOUNTER_LOG(fmt, ...) printf("[Automounter/BSP] " fmt, ##__VA_ARGS__)
 #else
-#define SD_AUTO_BSP_LOG(fmt, ...) do { } while(0)
+#define AUTOMOUNTER_LOG(fmt, ...) do { } while(0)
 #endif
 
 namespace miosix {
@@ -120,12 +120,13 @@ static bool sdCardPresentBySdio()
         reinitCountdown--;
 
     ssize_t r = sd->readBlock(buf, sizeof(buf), 0);
-    if (r == 512) return true;
+    if (r == 512)
+        return true;
 
     if (reinitCountdown == 0)
     {
         sd->ioctl(IOCTL_REINIT, nullptr);
-        reinitCountdown = 7; // ~5.6s at 200ms poll
+        reinitCountdown = SD_AUTOMOUNTER_SDIO_REINIT_BACKOFF_POLLS;
     }
 
     return false;
@@ -162,15 +163,23 @@ void bspInit2()
         #endif //AUX_SERIAL
 
         #if WITH_SD_CD_PIN
-        SdAutomounter::instance().configure(sd, &sdCardPresentByCd, 200, 3);
-        SD_AUTO_BSP_LOG("Detection mode: hardware CD\n");
+        SdAutomounter::instance().configure(sd, &sdCardPresentByCd,
+                                            SD_AUTOMOUNTER_POLL_MS,
+                                            SD_AUTOMOUNTER_REINIT_BEFORE_MOUNT_WITH_CD);
+        AUTOMOUNTER_LOG("Mode: hardware CD\n");
         #else
-        SdAutomounter::instance().configure(sd, &sdCardPresentBySdio, 200, 3);
-        SD_AUTO_BSP_LOG("Detection mode: SDIO software probing\n");
+        // In SDIO software probing mode, the probe function already
+        // performs successful readBlock() calls, so the card is fully
+        // initialized. Reinit before mount would disrupt this working
+        // state and can cause corrupt reads.
+        SdAutomounter::instance().configure(sd, &sdCardPresentBySdio,
+                                            SD_AUTOMOUNTER_POLL_MS,
+                                            SD_AUTOMOUNTER_REINIT_BEFORE_MOUNT_WITH_SDIO_PROBE);
+        AUTOMOUNTER_LOG("Mode: SDIO software probing\n");
         #endif
 
         SdAutomounter::instance().enable();
-        SD_AUTO_BSP_LOG("SD card automounter enabled\n");
+        AUTOMOUNTER_LOG("Automounter enabled\n");
     }
 
     #else //WITH_AUTOMOUNTER
@@ -211,6 +220,9 @@ void shutdown()
     ioctl(STDOUT_FILENO,IOCTL_SYNC,0);
 
     #ifdef WITH_FILESYSTEM
+    #ifdef WITH_AUTOMOUNTER
+    SdAutomounter::instance().stop();
+    #endif //WITH_AUTOMOUNTER
     FilesystemManager::instance().umountAll();
     #endif //WITH_FILESYSTEM
 
@@ -223,6 +235,9 @@ void reboot()
     ioctl(STDOUT_FILENO,IOCTL_SYNC,0);
     
     #ifdef WITH_FILESYSTEM
+    #ifdef WITH_AUTOMOUNTER
+    SdAutomounter::instance().stop();
+    #endif //WITH_AUTOMOUNTER
     FilesystemManager::instance().umountAll();
     #endif //WITH_FILESYSTEM
 

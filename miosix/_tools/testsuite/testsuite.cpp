@@ -139,6 +139,7 @@ static void benchmark_1();
 static void benchmark_2();
 static void benchmark_3();
 static void benchmark_4();
+static void test_automounter();
 //Exception thread safety test
 #ifndef __NO_EXCEPTIONS
 static void exception_test();
@@ -156,6 +157,7 @@ int main()
         iprintf("Type:\n"
                 " 't' for kernel test\n"
                 " 'k' for kercall test (includes filesystem)\n"
+                " 'a' for automounter tests\n"
                 " 'p' for syscall/processes test\n"
                 " 'c' for processes crash test\n"
                 " 'x' for exception test\n"
@@ -214,6 +216,9 @@ int main()
                 break;
             case 'k':
                 test_syscalls(); //Actually kercalls
+                break;
+            case 'a':
+                test_automounter();
                 break;
             case 'p':
                 #ifdef WITH_PROCESSES
@@ -4411,6 +4416,7 @@ void testCacheAndDMA()
 //
 
 #include "test_syscalls.cpp"
+#include "test_automounter.cpp"
 
 //
 // Syscall test (executed in a separate process)

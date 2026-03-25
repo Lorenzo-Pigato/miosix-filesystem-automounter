@@ -103,8 +103,9 @@ static const unsigned char sdVoltage=30; //Board powered @ 3.0V
 #define SD_ONE_BIT_DATABUS //Can't use 4 bit databus due to pin conflicts
 
 //
-// SD automounter options
+// SD automounter hardware wiring
 //
+// Behavior and timing settings live in config/sd_automounter_config.h.
 // Detection mode selector:
 // - 0: SDIO software probing
 // - 1: Hardware card-detect pin (CD)
@@ -129,12 +130,6 @@ static const unsigned char sdVoltage=30; //Board powered @ 3.0V
 #define SD_AUTOMOUNTER_CD_PULL_DOWN  2
 #ifndef SD_AUTOMOUNTER_CD_PULL
 #define SD_AUTOMOUNTER_CD_PULL SD_AUTOMOUNTER_CD_PULL_UP
-#endif
-
-// Optional debug logs for automounter internals.
-// 0 = disabled (default), 1 = enabled.
-#ifndef SD_AUTOMOUNTER_DEBUG_LOG
-#define SD_AUTOMOUNTER_DEBUG_LOG 0
 #endif
 
 // Optional short form to configure the CD pin with one macro:

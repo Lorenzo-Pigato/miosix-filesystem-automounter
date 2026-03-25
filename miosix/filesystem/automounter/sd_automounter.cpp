@@ -23,7 +23,7 @@
 #include "filesystem/stringpart.h"
 #include "filesystem/littlefs/lfs_miosix.h"
 
-#if SD_AUTOMOUNTER_DEBUG_LOG
+#if AUTOMOUNTER_DEBUG_LOG
 #define SD_AUTO_LOG(fmt, ...) printf("[SdAutomounter] " fmt, ##__VA_ARGS__)
 #else
 #define SD_AUTO_LOG(fmt, ...) do { } while(0)
@@ -31,6 +31,33 @@
 
 namespace miosix
 {
+
+#if AUTOMOUNTER_DEBUG_LOG
+    namespace
+    {
+        const char *errnoName(int error)
+        {
+            if (error < 0)
+                error = -error;
+
+            switch (error)
+            {
+                case 0: return "0";
+                case EACCES: return "EACCES";
+                case EBUSY: return "EBUSY";
+                case EEXIST: return "EEXIST";
+                case EINVAL: return "EINVAL";
+                case ENODEV: return "ENODEV";
+                case ENOENT: return "ENOENT";
+                case ENOMEM: return "ENOMEM";
+                case ENFILE: return "ENFILE";
+                case ENOTTY: return "ENOTTY";
+                case EROFS: return "EROFS";
+                default: return "UNKNOWN";
+            }
+        }
+    }
+#endif
 
     SdAutomounter &SdAutomounter::instance()
     {
@@ -41,53 +68,53 @@ namespace miosix
     SdAutomounter::SdAutomounter()
         : storage(),
           detect(nullptr),
-          pollMs(200),
-          requiredStableSamples(3),
+          pollMs(SD_AUTOMOUNTER_POLL_MS),
+          reinitBeforeMount(SD_AUTOMOUNTER_REINIT_BEFORE_MOUNT_DEFAULT),
           enabled(false),
           configured(false),
           worker(nullptr),
-          stablePresent(false),
-          lastPresent(false),
-          samplesCount(0),
+          pollingState(false),
           sdMounted(false)
     {
     }
 
-    void SdAutomounter::configure(intrusive_ref_ptr<Device> storage, CardDetectFn detect,
-                                  int pollMs, int requiredStableSamples)
+    void SdAutomounter::configure(intrusive_ref_ptr<Device> storage, CardProbeFunction detect,
+                                  int pollMs, bool reinitBeforeMount)
     {
         assert(!configured.load());
+        assert(detect != nullptr);
+
         Lock<Mutex> l(mtx);
 
         this->storage = storage;
         this->detect = detect;
-        this->pollMs = pollMs > 0 ? pollMs : 200;
-        this->requiredStableSamples = requiredStableSamples > 0 ? requiredStableSamples : 3;
+        this->pollMs = pollMs > 0 ? pollMs : SD_AUTOMOUNTER_POLL_MS;
+        this->reinitBeforeMount = reinitBeforeMount;
 
         // Init the integration counter so it starts saturated in the current
         // direction, avoiding a spurious transition at the first poll cycle.
-        stablePresent = detectPhysicalPresence();
-        samplesCount = stablePresent ? this->requiredStableSamples : 0;
+        pollingState = SdAutomounterPollingState<>(probeCardPresence());
         
         // Force a fresh edge evaluation when the worker wakes up. 
         // This allows mounting an already-inserted card at boot.
-        lastPresent = false;
         sdMounted = false;
 
-        SD_AUTO_LOG("Configured: poll=%dms debounce=%d initialPresent=%d\n",
-                    this->pollMs, 
-                    this->requiredStableSamples,
-                    static_cast<int>(stablePresent));
+        SD_AUTO_LOG("Configured: poll: %dms\tdebounce: %d\tstate: %s\n",
+                    this->pollMs,
+                    SD_AUTOMOUNTER_DEBOUNCE_SAMPLES,
+                    pollingState.isPresent() ? "present" : "absent");
 
         if (worker == nullptr)
         {
-            worker = Thread::create(threadTrampoline, 2048, 1, this, Thread::DETACHED);
+            worker = Thread::create(threadTrampoline, 2048, 1, this, Thread::JOINABLE);
             if (worker == nullptr)
+            {
+                SD_AUTO_LOG("Failed to create worker thread\n");
                 return;
+            }
             SD_AUTO_LOG("Worker thread created\n");
         }
 
-        // Set configured flag and wake up the worker thread
         configured.store(true);
         cv.signal();
     }
@@ -109,6 +136,25 @@ namespace miosix
         Lock<Mutex> l(mtx);
         cv.signal();
     }
+
+    void SdAutomounter::stop()
+    {
+        Thread *localWorker = worker;
+        if (localWorker == nullptr)
+            return;
+
+        enabled.store(false);
+        SD_AUTO_LOG("Stopping worker thread\n");
+        {
+            Lock<Mutex> l(mtx);
+            cv.signal();
+        }
+
+        localWorker->terminate();
+        localWorker->join();
+        worker = nullptr;
+        SD_AUTO_LOG("Worker thread stopped\n");
+    }
     
     void *SdAutomounter::threadTrampoline(void *automounterInstance)
     {   
@@ -116,26 +162,9 @@ namespace miosix
         return nullptr;
     }
 
-    bool SdAutomounter::detectPhysicalPresence() const
+    bool SdAutomounter::probeCardPresence() const
     {
-        if (detect == nullptr)
-            return true;
         return detect();
-    }
-
-    bool SdAutomounter::checkStablePresence(bool raw)
-    {
-        if (raw)
-            samplesCount = std::min(samplesCount + 1, requiredStableSamples);
-        else
-            samplesCount = std::max(samplesCount - 1, 0);
-
-        if (samplesCount >= requiredStableSamples)
-            stablePresent = true;
-        else if (samplesCount <= 0)
-            stablePresent = false;
-
-        return stablePresent;
     }
 
     bool SdAutomounter::ensureSdMountpoint()
@@ -144,14 +173,14 @@ namespace miosix
         ResolvedPath resolved = FilesystemManager::instance().resolvePath(root, false);
         if (resolved.result < 0 || !resolved.fs)
         {
-            SD_AUTO_LOG("Cannot resolve root filesystem, result=%d\n", resolved.result);
+            SD_AUTO_LOG("Cannot resolve root filesystem (%s)\n", errnoName(resolved.result));
             return false;
         }
 
         StringPart sd("sd");
         int result = resolved.fs->mkdir(sd, 0755);
         if (result != 0 && result != -EEXIST)
-            SD_AUTO_LOG("Cannot create /sd mountpoint, result=%d\n", result);
+            SD_AUTO_LOG("Cannot create /sd mountpoint (%s)\n", errnoName(result));
         return result == 0 || result == -EEXIST;
     }
 
@@ -163,26 +192,23 @@ namespace miosix
             return -ENODEV;
         }
         int result=storage->open(disk, intrusive_ref_ptr<FilesystemBase>(), O_RDWR, 0);
-        if(result<0) SD_AUTO_LOG("Cannot open storage device, result=%d\n", result);
+        if(result<0)
+            SD_AUTO_LOG("Cannot open storage device (%s)\n", errnoName(result));
         return result;
     }
 
     bool SdAutomounter::tryMountFat32(intrusive_ref_ptr<FileBase>& disk)
     {
         #ifdef WITH_FATFS
-        SD_AUTO_LOG("Trying FAT32 mount on /sd\n");
         intrusive_ref_ptr<Fat32Fs> fs(new Fat32Fs(disk));
         if (fs->mountFailed())
-        {
-            SD_AUTO_LOG("FAT32 mount probe failed\n");
             return false;
-        }
 
         int result = FilesystemManager::instance().kmount("/sd", fs);
         if (result == -EBUSY)
-            SD_AUTO_LOG("Warning: /sd already mounted (EBUSY)\n");
-        else
-            SD_AUTO_LOG("FAT32 kmount result=%d\n", result);
+            SD_AUTO_LOG("/sd is already mounted (EBUSY)\n");
+        else if (result < 0)
+            SD_AUTO_LOG("FAT32 mount failed (%s)\n", errnoName(result));
         return result == 0 || result == -EBUSY;
         #else
         (void)disk;
@@ -193,19 +219,15 @@ namespace miosix
     bool SdAutomounter::tryMountLittleFs(intrusive_ref_ptr<FileBase>& disk)
     {
         #ifdef WITH_LITTLEFS
-        SD_AUTO_LOG("Trying LittleFS mount on /sd\n");
         intrusive_ref_ptr<LittleFS> fs(new LittleFS(disk));
         if (fs->mountFailed())
-        {
-            SD_AUTO_LOG("LittleFS mount probe failed\n");
             return false;
-        }
 
         int result = FilesystemManager::instance().kmount("/sd", fs);
         if (result == -EBUSY)
-            SD_AUTO_LOG("Warning: /sd already mounted (EBUSY)\n");
-        else
-            SD_AUTO_LOG("LittleFS kmount result=%d\n", result);
+            SD_AUTO_LOG("/sd is already mounted (EBUSY)\n");
+        else if (result < 0)
+            SD_AUTO_LOG("LittleFS mount failed (%s)\n", errnoName(result));
         return result == 0 || result == -EBUSY;
         #else
         (void)disk;
@@ -215,6 +237,8 @@ namespace miosix
 
     bool SdAutomounter::mountSd()
     {
+        if (Thread::testTerminate())
+            return false;
         if (sdMounted)
         {
             SD_AUTO_LOG("Card already mounted, skipping mount\n");
@@ -222,18 +246,26 @@ namespace miosix
         }
         if (!ensureSdMountpoint())
             return false;
-        if (storage)
+        if (Thread::testTerminate())
+            return false;
+        if (reinitBeforeMount && storage)
         {
-            // Reinit is needed for hardware CD pin detection mode, where the
-            // detect function is a simple GPIO read and does not touch the SDIO
-            // driver. For SDIO software probing this is redundant but harmless.
+            // Before probing a filesystem, bring the card back to a known
+            // transfer state and let the driver recalibrate its final bus
+            // width/clock. Raw presence probing alone is not enough to
+            // guarantee that the subsequent mount sees consistent data.
             int reinitResult = storage->ioctl(IOCTL_REINIT, nullptr);
-            SD_AUTO_LOG("Storage reinit result=%d\n", reinitResult);
-            (void)reinitResult;
+            if (reinitResult < 0)
+                SD_AUTO_LOG("Storage reinit failed (%s)\n",
+                            errnoName(reinitResult));
         }
+        if (Thread::testTerminate())
+            return false;
 
         intrusive_ref_ptr<FileBase> disk;
         if (openDisk(disk) < 0)
+            return false;
+        if (Thread::testTerminate())
             return false;
 
         // Try all enabled filesystems in the same order used at boot.
@@ -243,6 +275,8 @@ namespace miosix
             SD_AUTO_LOG("Mounted /sd using FAT32\n");
             return true;
         }
+        if (Thread::testTerminate())
+            return false;
         if (tryMountLittleFs(disk))
         {
             sdMounted = true;
@@ -260,57 +294,96 @@ namespace miosix
         sdMounted = false;
 
         FilesystemManager& fsm = FilesystemManager::instance();
-        const int retries = 3;
+        const int retries = SD_AUTOMOUNTER_UNMOUNT_RETRY_COUNT > 0
+            ? SD_AUTOMOUNTER_UNMOUNT_RETRY_COUNT
+            : 1;
         for (int i = 0; i < retries; i++)
         {
             int result = fsm.umount("/sd", false);
-            SD_AUTO_LOG("Graceful umount attempt %d/%d result=%d\n",
-                        i+1, retries, result);
             if (result == 0 || result == -EINVAL)
+            {
+                SD_AUTO_LOG("Unmounted /sd\n");
                 return;
+            }
             if (result != -EBUSY)
+            {
+                SD_AUTO_LOG("Unmount failed (%s)\n", errnoName(result));
                 break;
-            Thread::sleep(200);
+            }
+            SD_AUTO_LOG("Unmount busy, retrying (%d/%d)\n", i + 1, retries);
+            Thread::sleep(SD_AUTOMOUNTER_UNMOUNT_RETRY_DELAY_MS);
         }
 
         // Forced umount is a last resort used when handles are still open.
         int forced=fsm.umount("/sd", true);
-        SD_AUTO_LOG("Forced umount result=%d\n", forced);
-        (void)forced;
+        if (forced == 0 || forced == -EINVAL)
+            SD_AUTO_LOG("Forced unmount completed\n");
+        else
+            SD_AUTO_LOG("Forced unmount failed (%s)\n", errnoName(forced));
     }
 
     void SdAutomounter::run()
     {
-        while (true)
+        #if AUTOMOUNTER_DEBUG_LOG
+        bool lastRawForLog = pollingState.isPresent();
+        #endif
+        
+        while (!Thread::testTerminate())
         {
             {
                 Lock<Mutex> l(mtx);
-                while (!configured.load() || !enabled.load())
+                while (!Thread::testTerminate() &&
+                       (!configured.load() || !enabled.load()))
                 {
                     cv.wait(mtx);
                 }
             }
+            if (Thread::testTerminate())
+                break;
 
-            bool raw = detectPhysicalPresence();
-            bool present = checkStablePresence(raw);
+            bool raw = probeCardPresence();
+            
+            #if AUTOMOUNTER_DEBUG_LOG
+            if (raw != lastRawForLog)
+            {
+                SD_AUTO_LOG("Physical detect changed: %s\n",
+                            raw ? "present" : "absent");
+                lastRawForLog = raw;
+            }
+            #endif
+            
+            SdAutomounterEdge edge = pollingState.advance(raw);
 
             // Edge detection on the debounced state:
-            if (present != lastPresent)
+            if (edge != SdAutomounterEdge::None)
             {
-                lastPresent = present;
-                if (present)
+                if (edge == SdAutomounterEdge::Inserted)
                 {
-                    SD_AUTO_LOG("Insertion edge detected\n");
-                    if (!mountSd())
-                        SD_AUTO_LOG("Mount failed\n");
+                    SD_AUTO_LOG("Debounced insertion detected\n");
+                    //Retry mount a few times. Bus-level CRC errors can
+                    //cause intermittent read failures, but retrying
+                    //usually succeeds.
+                    const int retries = SD_AUTOMOUNTER_MOUNT_RETRY_COUNT > 0
+                        ? SD_AUTOMOUNTER_MOUNT_RETRY_COUNT
+                        : 1;
+                    for (int attempt = 0; attempt < retries; attempt++)
+                    {
+                        if (mountSd()) break;
+                        SD_AUTO_LOG("Mount attempt %d/%d failed, retrying\n",
+                                    attempt + 1, retries);
+                        if (Thread::testTerminate()) break;
+                        Thread::sleep(SD_AUTOMOUNTER_MOUNT_RETRY_DELAY_MS);
+                    }
                 }
                 else
                 {
-                    SD_AUTO_LOG("Removal edge detected\n");
+                    SD_AUTO_LOG("Debounced removal detected\n");
                     unmountSd();
                 }
             }
 
+            if (Thread::testTerminate())
+                break;
             Thread::sleep(pollMs);
         }
     }
