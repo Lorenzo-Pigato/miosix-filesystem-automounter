@@ -8,8 +8,7 @@ using namespace miosix;
 
 int main()
 {
-    printf("---- Program started ----\n");
-    for(;;)
+    for (int i = 0; i< 10; i++)
     {
         ledOn();
         Thread::sleep(1000);
