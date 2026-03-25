@@ -724,16 +724,6 @@ public:
 
     /**
      * \internal
-     * Automatically select the data speed. This routine selects the highest
-     * sustainable data transfer speed. This is done by binary search until
-     * the highest clock speed that causes no errors is found.
-     * This function as a side effect enables 4bit bus width, and clock
-     * powersave.
-     */
-    static void calibrateClockSpeed(SDIODriver *sdio);
-
-    /**
-     * \internal
      * Since clock speed is set dynamically by binary search at runtime, a
      * corner case might be that of a clock speed which results in unreliable
      * data transfer, that sometimes succeeds, and sometimes fail.
@@ -757,6 +747,8 @@ public:
     static unsigned char getRetryCount() { return retries; }
 
 private:
+    friend class SDIODriver;
+
     /**
      * Set SDIO clock speed
      * \param clkdiv speed is SDIOCLK/(clkdiv+2) 
@@ -793,42 +785,6 @@ private:
     ///\internal value returned by getRetryCount()
     static unsigned char retries;
 };
-
-void ClockController::calibrateClockSpeed(SDIODriver *sdio)
-{
-    //During calibration we call readBlock() which will call reduceClockSpeed()
-    //so not to invalidate calibration clock reduction must not be available
-    clockReductionAvailable=0;
-    retries=1;
-
-    DBG("Automatic speed calibration\n");
-    unsigned int buffer[512/sizeof(unsigned int)];
-    unsigned int minFreq=CLOCK_400KHz;
-    unsigned int maxFreq=CLOCK_MAX;
-    unsigned int selected;
-    while(minFreq-maxFreq>1)
-    {
-        selected=(minFreq+maxFreq)/2;
-        DBG("Trying CLKCR=%d\n",selected);
-        setClockSpeed(selected);
-        if(sdio->readBlock(reinterpret_cast<unsigned char*>(buffer),512,0)==512)
-            minFreq=selected;
-        else maxFreq=selected;
-    }
-    //Last round of algorithm
-    setClockSpeed(maxFreq);
-    if(sdio->readBlock(reinterpret_cast<unsigned char*>(buffer),512,0)==512)
-    {
-        DBG("Optimal CLKCR=%d\n",maxFreq);
-    } else {
-        setClockSpeed(minFreq);
-        DBG("Optimal CLKCR=%d\n",minFreq);
-    }
-
-    //Make clock reduction available
-    clockReductionAvailable=MAX_ALLOWED_REDUCTIONS;
-    retries=MAX_RETRY;
-}
 
 bool ClockController::reduceClockSpeed()
 {
@@ -983,8 +939,9 @@ static bool multipleBlockRead(unsigned char *buffer, unsigned int nblk,
     unsigned int memoryTransferSize=dmaTransferCommonSetup(buffer);
     
     //Data transfer is considered complete once the DMA transfer complete
-    //interrupt occurs, that happens when the last data was written in the
-    //buffer. Both SDIO and DMA error interrupts are active to catch errors
+    //interrupt occurs. SDIO error interrupts (CRC, timeout, overrun) can
+    //also wake the thread early. After DMA TC, we poll SDIO->STA for the
+    //CRC result before returning, to avoid missing CRC errors.
     int32_t t=SDIO_MASK_RXOVERRIE  | //Interrupt on rx underrun
               SDIO_MASK_TXUNDERRIE | //Interrupt on tx underrun
               SDIO_MASK_DCRCFAILIE | //Interrupt on data CRC fail
@@ -1030,10 +987,30 @@ static bool multipleBlockRead(unsigned char *buffer, unsigned int nblk,
         FastGlobalIrqLock dLock;
         while(waiting) Thread::IRQglobalIrqUnlockAndWait(dLock);
     } else sdioTransferError=true;
+    //Disable SDIO interrupts immediately to prevent the handler from
+    //clearing STA flags while we poll for CRC completion below.
+    SDIO->MASK=0;
     DMA_Stream->CR=0;
     while(DMA_Stream->CR & DMA_SxCR_EN) ; //DMA may take time to stop
+    //If DMA TC woke us, the CRC check may not have completed yet (CRC16
+    //is checked after the data phase). Poll SDIO->STA for DATAEND (CRC
+    //passed) or error flags. SDIO MASK is already 0, so no interrupt
+    //will race with this poll.
+    if(!sdioTransferError && !dmaTransferError)
+    {
+        for(int i=0;i<200000;i++)
+        {
+            unsigned int sta=SDIO->STA;
+            if(sta & (SDIO_STA_DCRCFAIL | SDIO_STA_DTIMEOUT | SDIO_STA_RXOVERR))
+            {
+                sdioFlags=sta;
+                sdioTransferError=true;
+                break;
+            }
+            if(sta & SDIO_STA_DATAEND) break;
+        }
+    }
     SDIO->DCTRL=0; //Disable data path state machine
-    SDIO->MASK=0;
 
     // CMD12 is sent to end CMD18 (multiple block read), or to abort an
     // unfinished read in case of errors
@@ -1408,12 +1385,22 @@ intrusive_ref_ptr<SDIODriver> SDIODriver::instance()
     return instance;
 }
 
+namespace
+{
+    bool sdioReinitLocked(SDIODriver *self);
+}
+
 ssize_t SDIODriver::readBlock(void* buffer, size_t size, off_t where)
+{
+    Lock<KernelMutex> l(mutex);
+    return readBlockNoLock(buffer, size, where);
+}
+
+ssize_t SDIODriver::readBlockNoLock(void* buffer, size_t size, off_t where)
 {
     if(where % 512 || size % 512) return -EFAULT;
     unsigned int lba=where/512;
     unsigned int nSectors=size/512;
-    Lock<KernelMutex> l(mutex);
     DBG("SDIODriver::readBlock(): nSectors=%d\n",nSectors);
     bool goodBuffer=BufferConverter::isGoodBuffer(buffer);
     if(goodBuffer==false) DBG("Buffer inside CCM\n");
@@ -1459,10 +1446,15 @@ ssize_t SDIODriver::readBlock(void* buffer, size_t size, off_t where)
 
 ssize_t SDIODriver::writeBlock(const void* buffer, size_t size, off_t where)
 {
+    Lock<KernelMutex> l(mutex);
+    return writeBlockNoLock(buffer, size, where);
+}
+
+ssize_t SDIODriver::writeBlockNoLock(const void* buffer, size_t size, off_t where)
+{
     if(where % 512 || size % 512) return -EFAULT;
     unsigned int lba=where/512;
     unsigned int nSectors=size/512;
-    Lock<KernelMutex> l(mutex);
     DBG("SDIODriver::writeBlock(): nSectors=%d\n",nSectors);
     bool goodBuffer=BufferConverter::isGoodBuffer(buffer);
     if(goodBuffer==false) DBG("Buffer inside CCM\n");
@@ -1504,6 +1496,78 @@ ssize_t SDIODriver::writeBlock(const void* buffer, size_t size, off_t where)
         }
     }
     return -EBADF;
+}
+
+bool SDIODriver::calibrateClockSpeedLocked()
+{
+    // During calibrationblock reads are performed directly through the locked
+    // helper so that reinit and calibration stay part of the same serialized
+    // driver operation.
+    ClockController::clockReductionAvailable=0;
+    ClockController::retries=1;
+
+    DBG("Automatic speed calibration\n");
+    unsigned int reference[512/sizeof(unsigned int)];
+    unsigned int probe[512/sizeof(unsigned int)];
+    unsigned int minFreq=ClockController::CLOCK_400KHz;
+    unsigned int maxFreq=ClockController::CLOCK_MAX;
+    unsigned int selected;
+
+    // First acquire a known-good reference block at the conservative low
+    // speed, but with the final SDIO bus-width configuration already applied.
+    // Some failing speeds can still complete a transfer without CRC/timeouts
+    // while returning corrupted payload, so clock calibration must validate
+    // data consistency, not only transport success.
+    ClockController::setClockSpeed(minFreq);
+    //Allow multiple attempts for the reference read. Bus-level CRC errors
+    //can occur intermittently even at 400kHz (e.g. on boards with long
+    //wires to the SD card slot), and a single-attempt read would cause
+    //calibration to fail unnecessarily.
+    ClockController::retries=ClockController::MAX_RETRY;
+    if(readBlockNoLock(reinterpret_cast<unsigned char*>(reference),512,0)!=512)
+    {
+        ClockController::clockReductionAvailable=ClockController::MAX_ALLOWED_REDUCTIONS;
+        return false;
+    }
+    ClockController::retries=1;
+
+    ClockController::retries=3; //Use a few retries for robustness
+    while(minFreq-maxFreq>1)
+    {
+        selected=(minFreq+maxFreq)/2;
+        DBG("Trying CLKCR=%d\n",selected);
+        ClockController::setClockSpeed(selected);
+        if(readBlockNoLock(reinterpret_cast<unsigned char*>(probe),512,0)==512
+        && std::memcmp(probe, reference, sizeof(reference))==0)
+            minFreq=selected;
+        else maxFreq=selected;
+    }
+
+    bool success=false;
+    ClockController::setClockSpeed(maxFreq);
+    if(readBlockNoLock(reinterpret_cast<unsigned char*>(probe),512,0)==512
+    && std::memcmp(probe, reference, sizeof(reference))==0)
+    {
+        DBG("Optimal CLKCR=%d\n",maxFreq);
+        success=true;
+    } else {
+        ClockController::setClockSpeed(minFreq);
+        success=readBlockNoLock(reinterpret_cast<unsigned char*>(probe),512,0)==512
+             && std::memcmp(probe, reference, sizeof(reference))==0;
+        DBG("Optimal CLKCR=%d\n",minFreq);
+    }
+
+    ClockController::clockReductionAvailable=ClockController::MAX_ALLOWED_REDUCTIONS;
+    ClockController::retries=ClockController::MAX_RETRY;
+    return success;
+}
+
+bool SDIODriver::reinitialize(bool calibrate)
+{
+    Lock<KernelMutex> l(mutex);
+    if(sdioReinitLocked(this)==false) return false;
+    if(calibrate==false) return true;
+    return calibrateClockSpeedLocked();
 }
 
 namespace
@@ -1583,8 +1647,8 @@ namespace
         // possible read/write speed. This as a side effect enables 4bit bus width.
 
         // Note: do NOT calibrate clock speed here.
-        // Reinit is used for hotplug recovery and it is 
-        // sufficient to restore a defined card state. 
+        // Reinit is used for hotplug recovery and it is
+        // sufficient to restore a defined card state.
         // Calibration can be performed later
 
         //ClockController::calibrateClockSpeed(self);
@@ -1596,17 +1660,18 @@ namespace
 int SDIODriver::ioctl(int cmd, void *arg)
 {
     DBG("SDIODriver::ioctl()\n");
-    Lock<KernelMutex> l(mutex);
-
     switch (cmd)
     {
     case IOCTL_SYNC:
+    {
+        Lock<KernelMutex> l(mutex);
         // Note: no need to select card, since status can be queried even with card
         // not selected.
         return waitForCardReady() ? 0 : -EFAULT;
+    }
 
     case IOCTL_REINIT:
-        return sdioReinitLocked(this) ? 0 : -EFAULT;
+        return reinitialize(true) ? 0 : -EFAULT;
 
     default:
         return -ENOTTY;
@@ -1615,8 +1680,7 @@ int SDIODriver::ioctl(int cmd, void *arg)
 
 SDIODriver::SDIODriver() : Device(Device::BLOCK)
 {
-    Lock<KernelMutex> l(mutex);
-    if (sdioReinitLocked(this)) DBG("SDIO init: Success\n");
+    if (reinitialize(true)) DBG("SDIO init: Success\n");
 }
 
 } //namespace miosix
