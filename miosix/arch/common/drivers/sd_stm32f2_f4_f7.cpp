@@ -119,9 +119,29 @@ namespace miosix {
 static volatile bool driverError;       ///< \internal Errors caused by OS issues (premature wakeup)
 static volatile bool dmaTransferError;  ///< \internal DMA transfer error
 static volatile bool sdioTransferError; ///< \internal SDIO transfer error
+static volatile bool dmaDone;           ///< \internal DMA TC received (no error) — read path
+static volatile bool sdioDone;          ///< \internal SDIO DATAEND received (no error)
+static volatile bool waitForDmaToo;     ///< \internal Read path: require both DMA TC and SDIO DATAEND
 static Thread *waiting;                 ///< \internal Thread waiting for transfer
 static unsigned int dmaFlags;           ///< \internal DMA status flags
 static unsigned int sdioFlags;          ///< \internal SDIO status flags
+
+/**
+ * \internal
+ * Called from ISR context only. Wakes the waiting thread when the transfer is
+ * fully complete (or on any error). For reads (waitForDmaToo==true), both DMA TC
+ * and SDIO DATAEND must have been observed; for writes, SDIO DATAEND alone suffices.
+ */
+static void maybeWakeWaitingThread()
+{
+    if(!waiting) return;
+    bool ready = waitForDmaToo ? (dmaDone && sdioDone) : sdioDone;
+    if(ready || dmaTransferError || sdioTransferError)
+    {
+        waiting->IRQwakeup();
+        waiting=nullptr;
+    }
+}
 
 /**
  * \internal
@@ -133,6 +153,8 @@ void SDDMAirqImpl()
     #if (defined(_ARCH_CORTEXM7_STM32F7) || defined(_ARCH_CORTEXM7_STM32H7)) && SD_SDMMC==2
     if(dmaFlags & (DMA_LISR_TEIF0 | DMA_LISR_DMEIF0 | DMA_LISR_FEIF0))
         dmaTransferError=true;
+    else
+        dmaDone=true; // TC with no error
 
     DMA2->LIFCR = DMA_LIFCR_CTCIF0
                 | DMA_LIFCR_CTEIF0
@@ -141,16 +163,16 @@ void SDDMAirqImpl()
     #else
     if(dmaFlags & (DMA_LISR_TEIF3 | DMA_LISR_DMEIF3 | DMA_LISR_FEIF3))
         dmaTransferError=true;
+    else
+        dmaDone=true; // TC with no error
 
     DMA2->LIFCR = DMA_LIFCR_CTCIF3
                 | DMA_LIFCR_CTEIF3
                 | DMA_LIFCR_CDMEIF3
                 | DMA_LIFCR_CFEIF3;
     #endif
-    
-    if(!waiting) return;
-    waiting->IRQwakeup();
-    waiting=nullptr;
+
+    maybeWakeWaitingThread();
 }
 
 /**
@@ -167,15 +189,17 @@ void SDirqImpl()
     if(sdioFlags & SDIO_STA_STBITERR)
         sdioTransferError=true;
     #endif
-    if(sdioFlags & (SDIO_STA_RXOVERR  | SDIO_STA_TXUNDERR | 
+    if(sdioFlags & (SDIO_STA_RXOVERR  | SDIO_STA_TXUNDERR |
                     SDIO_STA_DTIMEOUT | SDIO_STA_DCRCFAIL))
         sdioTransferError=true;
-    
+    // Latch DATAEND separately; set only when no error flag is present so that
+    // maybeWakeWaitingThread() can distinguish success from failure cleanly.
+    if(!sdioTransferError && (sdioFlags & SDIO_STA_DATAEND))
+        sdioDone=true;
+
     SDIO->ICR=ICR_FLAGS_CLR; //Clear flags
-    
-    if(!waiting) return;
-    waiting->IRQwakeup();
-    waiting=nullptr;
+
+    maybeWakeWaitingThread();
 }
 
 /*
@@ -881,7 +905,7 @@ static void displayBlockTransferError()
  * memory transfer size based on buffer alignment
  * \return the best DMA transfer size for a given buffer alignment 
  */
-static unsigned int dmaTransferCommonSetup(const unsigned char *buffer)
+static unsigned int dmaTransferCommonSetup(const unsigned char *buffer, bool readMode=false)
 {
     //Clear both SDIO and DMA interrupt flags
     SDIO->ICR=ICR_FLAGS_CLR;
@@ -900,6 +924,9 @@ static unsigned int dmaTransferCommonSetup(const unsigned char *buffer)
     driverError=false;
     dmaTransferError=false;
     sdioTransferError=false;
+    dmaDone=false;
+    sdioDone=false;
+    waitForDmaToo=readMode;
     dmaFlags=sdioFlags=0;
     waiting=Thread::getCurrentThread();
     
@@ -936,13 +963,13 @@ static bool multipleBlockRead(unsigned char *buffer, unsigned int nblk,
     
     if(cardType!=SDHC) lba*=512; // Convert to byte address if not SDHC
     
-    unsigned int memoryTransferSize=dmaTransferCommonSetup(buffer);
-    
-    //Data transfer is considered complete once the DMA transfer complete
-    //interrupt occurs. SDIO error interrupts (CRC, timeout, overrun) can
-    //also wake the thread early. After DMA TC, we poll SDIO->STA for the
-    //CRC result before returning, to avoid missing CRC errors.
-    int32_t t=SDIO_MASK_RXOVERRIE  | //Interrupt on rx underrun
+    unsigned int memoryTransferSize=dmaTransferCommonSetup(buffer, true /*read mode*/);
+
+    // Thread is woken only when BOTH DMA TC (dmaDone) AND SDIO DATAEND (sdioDone)
+    // have been observed, or on any error. This eliminates the race where DMA TC
+    // fires before the SDIO CRC16 check has completed.
+    int32_t t=SDIO_MASK_DATAENDIE  | //Interrupt on data end (CRC passed)
+              SDIO_MASK_RXOVERRIE  | //Interrupt on rx overrun
               SDIO_MASK_TXUNDERRIE | //Interrupt on tx underrun
               SDIO_MASK_DCRCFAILIE | //Interrupt on data CRC fail
               SDIO_MASK_DTIMEOUTIE;  //Interrupt on data timeout
@@ -987,29 +1014,9 @@ static bool multipleBlockRead(unsigned char *buffer, unsigned int nblk,
         FastGlobalIrqLock dLock;
         while(waiting) Thread::IRQglobalIrqUnlockAndWait(dLock);
     } else sdioTransferError=true;
-    //Disable SDIO interrupts immediately to prevent the handler from
-    //clearing STA flags while we poll for CRC completion below.
     SDIO->MASK=0;
     DMA_Stream->CR=0;
     while(DMA_Stream->CR & DMA_SxCR_EN) ; //DMA may take time to stop
-    //If DMA TC woke us, the CRC check may not have completed yet (CRC16
-    //is checked after the data phase). Poll SDIO->STA for DATAEND (CRC
-    //passed) or error flags. SDIO MASK is already 0, so no interrupt
-    //will race with this poll.
-    if(!sdioTransferError && !dmaTransferError)
-    {
-        for(int i=0;i<200000;i++)
-        {
-            unsigned int sta=SDIO->STA;
-            if(sta & (SDIO_STA_DCRCFAIL | SDIO_STA_DTIMEOUT | SDIO_STA_RXOVERR))
-            {
-                sdioFlags=sta;
-                sdioTransferError=true;
-                break;
-            }
-            if(sta & SDIO_STA_DATAEND) break;
-        }
-    }
     SDIO->DCTRL=0; //Disable data path state machine
 
     // CMD12 is sent to end CMD18 (multiple block read), or to abort an
