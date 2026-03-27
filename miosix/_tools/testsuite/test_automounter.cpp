@@ -7,7 +7,8 @@
  *   (at your option) any later version.                                   *
  ***************************************************************************/
 
-// WARNING: this file must be included from testsuite.cpp
+// [!] WARNING: this file must be included from testsuite.cpp, do not compile directly
+
 
 #include <cerrno>
 #include <cstdio>
@@ -17,17 +18,29 @@
 #include "filesystem/automounter/sd_automounter.h"
 
 #ifdef WITH_FILESYSTEM
+#define AM_SENTINEL_DIR  "/sd/automounter_test"
+#define AM_SENTINEL      AM_SENTINEL_DIR "/sentinel.txt"
 
-using namespace miosix;
+namespace {
 
-static const char AM_SENTINEL[]="/sd/automounter_test/sentinel.txt";
-static const char AM_SENTINEL_CONTENT[]="miosix automounter sentinel\n";
-static const unsigned int AM_TIMEOUT_MS=5000;
-static const unsigned int AM_POLL_MS=100;
+// --------------------------- Constants -------------------------------------
 
-static const char *edgeName(SdAutomounterEdge e)
+const char AM_SENTINEL_CONTENT[] = "miosix automounter sentinel\n";
+
+constexpr unsigned int AM_TIMEOUT_MS  = 5000; ///< general wait timeout
+constexpr unsigned int AM_POLL_MS     = 100;  ///< general polling interval
+constexpr int          AM_DIR_MODE    = 0755; ///< mkdir permissions
+constexpr unsigned int AM_SENTINEL_BUF = 64;  ///< sentinel read buffer size
+
+/// Debounce threshold for logic tests
+constexpr int AM_LOGIC_DEBOUNCE_N = 3;
+
+
+// --------------------------- Helpers -------------------------------------
+
+const char *edgeName(SdAutomounterEdge edg)
 {
-    switch(e)
+    switch(edg)
     {
         case SdAutomounterEdge::None:     return "none";
         case SdAutomounterEdge::Inserted: return "inserted";
@@ -36,260 +49,328 @@ static const char *edgeName(SdAutomounterEdge e)
     return "unknown";
 }
 
-static bool automounterAskYesNo(const char *prompt)
+bool askYesNo(const char *prompt)
 {
-    iprintf("%s [y/N]\t",prompt);
+    iprintf("%s [y/N] ", prompt);
     for(;;)
     {
-        int c=getchar();
-        if(c=='\n') continue;
-        return c=='y' || c=='Y';
+        int c = getchar();
+        if(c == '\n') continue;
+        return c == 'y' || c == 'Y';
     }
 }
 
-static void automounterWaitForAck(const char *prompt)
+void waitForAck(const char *prompt)
 {
-    iprintf("%s Type 'y' when ready.\t",prompt);
+    iprintf("%s Type 'y' when done. ", prompt);
     for(;;)
     {
-        int c=getchar();
-        if(c=='\n') continue;
-        if(c=='y' || c=='Y') return;
+        int c = getchar();
+        if(c == '\n') continue;
+        if(c == 'y' || c == 'Y') return;
     }
 }
 
-static bool automounterIsMounted()
+bool isMounted()
 {
-    struct stat rootSt, sdSt;
-    if(stat("/",&rootSt)!=0 || stat("/sd",&sdSt)!=0) return false;
-    return rootSt.st_dev!=sdSt.st_dev;
-}
+    struct stat rootStat, sdStat;
 
-static bool automounterCanReadSentinel()
-{
-    if(!automounterIsMounted()) return false;
+    // return false upon a stat failure
+    if(stat("/", &rootStat) != 0 || stat("/sd", &sdStat) != 0) return false;
     
-    FILE *f=fopen(AM_SENTINEL,"rb");
-    if(!f) return false;
-    char buf[64];
-    size_t n=fread(buf,1,sizeof(buf)-1,f);
-    buf[n]='\0';
-    fclose(f);
-    return strcmp(buf,AM_SENTINEL_CONTENT)==0;
+    // return true if the root and /sd are on different devices.
+    // This implies /sd is a mounted filesystem and not just a 
+    // directory inside root fs
+    return rootStat.st_dev != sdStat.st_dev;
 }
 
-static bool automounterEnsureSentinel()
+bool canReadSentinel()
 {
-    if(!automounterIsMounted()) return false;
-    mkdir("/sd/automounter_test",0755); // ignore EEXIST
-    if(automounterCanReadSentinel()) return true;
-    FILE *f=fopen(AM_SENTINEL,"wb");
+    if(!isMounted()) return false;
+
+    FILE *f = fopen(AM_SENTINEL, "rb");
+    
     if(!f) return false;
-    size_t expected=strlen(AM_SENTINEL_CONTENT);
-    bool ok=(fwrite(AM_SENTINEL_CONTENT,1,expected,f)==expected && fclose(f)==0);
+    
+    char buf[AM_SENTINEL_BUF];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = '\0';
+    
+    fclose(f);
+    return strcmp(buf, AM_SENTINEL_CONTENT) == 0;
+}
+
+bool ensureSentinel()
+{
+    if(!isMounted()) return false;
+    
+    mkdir(AM_SENTINEL_DIR, AM_DIR_MODE); // ignore EEXIST
+    
+    if(canReadSentinel()) 
+        return true;
+    
+    // otherwise, try creating the sentinel file
+    FILE *f = fopen(AM_SENTINEL, "wb");
+    if(!f) return false;
+    
+    size_t expected = strlen(AM_SENTINEL_CONTENT);
+    
+    // fwrite writes a single byte at a time (1)
+    bool ok = (fwrite(AM_SENTINEL_CONTENT, 1, expected, f) == expected && fclose(f) == 0);
     return ok;
 }
 
-static bool automounterWaitMounted(bool expected, unsigned int timeoutMs)
+bool waitMounted(bool expected, unsigned int timeoutMs)
 {
-    for(unsigned int t=0; t<=timeoutMs; t+=AM_POLL_MS)
+    for(unsigned int t = 0; t <= timeoutMs; t += AM_POLL_MS)
     {
-        if(automounterIsMounted()==expected) return true;
+        if(isMounted() == expected) return true;
         Thread::sleep(AM_POLL_MS);
     }
     return false;
 }
 
-static bool automounterWaitSentinel(unsigned int timeoutMs)
+bool waitSentinel(unsigned int timeoutMs)
 {
-    for(unsigned int t=0; t<=timeoutMs; t+=AM_POLL_MS)
+    for(unsigned int t = 0; t <= timeoutMs; t += AM_POLL_MS)
     {
-        if(automounterIsMounted() && automounterEnsureSentinel()
-           && automounterCanReadSentinel())
+        if(isMounted() && ensureSentinel() && canReadSentinel())
             return true;
         Thread::sleep(AM_POLL_MS);
     }
     return false;
 }
 
-//
-// Logic tests — exercise the debounce state machine without hardware
-//
+// ------------------------- LOGIC TESTS ---------------------------
+// Test the correctness of the debounce state machine
+// No hardware needed
 
-template<int N>
-static void automounterCheckAdvance(const char *name,
-                                    SdAutomounterPollingState<N> state,
-                                    const bool *samples,
-                                    const SdAutomounterEdge *expected,
-                                    unsigned int count,
-                                    bool expectedStable)
+template<int requiredStableSamples> 
+void checkAdvance(const char *name,
+                  SdAutomounterPollingState<requiredStableSamples> state,
+                  const bool *samples,
+                  const SdAutomounterEdge *expected,
+                  unsigned int count,
+                  bool expectedStable)
 {
     test_name(name);
-    for(unsigned int i=0; i<count; i++)
+    for(unsigned int i = 0; i < count; i++)
     {
-        SdAutomounterEdge got=state.advance(samples[i]);
-        if(got!=expected[i])
+        SdAutomounterEdge got = state.advance(samples[i]);
+        if(got != expected[i])
         {
             char buf[128];
-            snprintf(buf,sizeof(buf),"sample %u: expected %s, got %s",
-                     i,edgeName(expected[i]),edgeName(got));
+            snprintf(buf, sizeof(buf), "sample %u: expected %s, got %s",
+                     i, edgeName(expected[i]), edgeName(got));
             fail(buf);
         }
     }
-    if(state.isPresent()!=expectedStable)
+    if(state.isPresent() != expectedStable)
         fail("final stablePresent mismatch");
     pass();
 }
 
-template<int N>
-static SdAutomounterPollingState<N> automounterStableState(bool present)
+template<int requiredStableSamples>
+SdAutomounterPollingState<requiredStableSamples> stableState(bool present)
 {
-    SdAutomounterPollingState<N> state(present);
+    SdAutomounterPollingState<requiredStableSamples> state(present);
+    
     if(present) state.advance(true);
     return state;
 }
 
-static void automounterLogicTest1()
+/**
+ * \brief Verify that a card already present at boot emits one and only one insertion edge.
+ */
+void logicTest1()
 {
-    // Boot with card already present: first advance triggers Inserted
-    const bool sam[]={true,true,true};
-    const SdAutomounterEdge exp[]={
+    const bool samps[] = {true, true, true};
+    const SdAutomounterEdge exp[] = {
         SdAutomounterEdge::Inserted,
         SdAutomounterEdge::None,
         SdAutomounterEdge::None};
-    automounterCheckAdvance("logic_1 boot present",
-        SdAutomounterPollingState<3>(true),sam,exp,3,true);
+    
+    checkAdvance("[logic] [1] boot present",
+        SdAutomounterPollingState<AM_LOGIC_DEBOUNCE_N>(true), samps, exp, 3, true);
 }
 
-static void automounterLogicTest2()
+/**
+ * \brief Verify that insertion requires enough stable present samples.
+ */
+void logicTest2()
 {
-    // Insert debounce: glitch resets, then 3 stable samples trigger Inserted
-    const bool sam[]={true,false,true,true,true};
-    const SdAutomounterEdge exp[]={
+    const bool samps[] = {true, false, true, true, true};
+    const SdAutomounterEdge exp[] = {
         SdAutomounterEdge::None, SdAutomounterEdge::None,
         SdAutomounterEdge::None, SdAutomounterEdge::None,
         SdAutomounterEdge::Inserted};
-    automounterCheckAdvance("logic_2 insert debounce",
-        SdAutomounterPollingState<3>(false),sam,exp,5,true);
+    
+    checkAdvance("[logic] [2] insert debounce",
+        SdAutomounterPollingState<AM_LOGIC_DEBOUNCE_N>(false), samps, exp, 5, true);
 }
 
-static void automounterLogicTest3()
+/**
+ * \brief Verify that removal requires enough stable absent samples.
+ */
+void logicTest3()
 {
-    // Remove debounce: glitch resets, then 3 stable absent samples trigger Removed
-    const bool sam[]={false,true,false,false,false};
-    const SdAutomounterEdge exp[]={
+    const bool samps[] = {false, true, false, false, false};
+    const SdAutomounterEdge exp[] = {
         SdAutomounterEdge::None, SdAutomounterEdge::None,
         SdAutomounterEdge::None, SdAutomounterEdge::None,
         SdAutomounterEdge::Removed};
-    SdAutomounterPollingState<3> running=
-        automounterStableState<3>(true);
-    automounterCheckAdvance("logic_3 remove debounce",
-        running,sam,exp,5,false);
+    
+    SdAutomounterPollingState<AM_LOGIC_DEBOUNCE_N> running =
+        stableState<AM_LOGIC_DEBOUNCE_N>(true);
+    
+    checkAdvance("[logic] [3] remove debounce", running, samps, exp, 5, false);
 }
 
-static void automounterLogicTest4()
+/**
+ * \brief Verify that a stable present state does not emit duplicate insertions.
+ */
+void logicTest4()
 {
-    // Already stable present: no duplicate Inserted edge
-    const bool sam[]={true,true,true};
-    const SdAutomounterEdge exp[]={
+    const bool samps[] = {true, true, true};
+    const SdAutomounterEdge exp[] = {
         SdAutomounterEdge::None, SdAutomounterEdge::None,
         SdAutomounterEdge::None};
-    SdAutomounterPollingState<3> running=
-        automounterStableState<3>(true);
-    automounterCheckAdvance("logic_4 no duplicate edges",
-        running,sam,exp,3,true);
+    
+    SdAutomounterPollingState<AM_LOGIC_DEBOUNCE_N> running =
+        stableState<AM_LOGIC_DEBOUNCE_N>(true);
+    
+    checkAdvance("[logic] [4] no duplicate edges", running, samps, exp, 3, true);
 }
 
-static void automounterLogicTest5()
+/**
+ * \brief Verify that alternating samples below threshold do not emit edges.
+ */
+void logicTest5()
 {
-    // Alternating true/false never reaches threshold → no edge
-    const bool sam[]={true,false,true,false,true};
-    const SdAutomounterEdge exp[]={
+    const bool samps[] = {true, false, true, false, true};
+    const SdAutomounterEdge exp[] = {
         SdAutomounterEdge::None, SdAutomounterEdge::None,
         SdAutomounterEdge::None, SdAutomounterEdge::None,
         SdAutomounterEdge::None};
-    automounterCheckAdvance("logic_5 glitch rejection",
-        SdAutomounterPollingState<3>(false),sam,exp,5,false);
+    
+    checkAdvance("[logic] [5] glitch rejection",
+        SdAutomounterPollingState<AM_LOGIC_DEBOUNCE_N>(false), samps, exp, 5, false);
 }
 
-//
-// Hardware tests — require a real SD card
-//
+// ------------------------- HARDWARE TESTS ------------------------
+// Require a real SD card and user interaction
 
-static void automounterHwBootWithCard()
+
+/**
+ * \brief Verify that a card inserted before boot is mounted automatically.
+ *
+ * \note Manual hardware test. The SD card must already be inserted at boot.
+ */
+void hwBootWithCard()
 {
-    test_name("hw_1 boot with card");
-    if(!automounterWaitSentinel(AM_TIMEOUT_MS))
+    test_name("[hw] [1] boot with card");
+    
+    if(!waitSentinel(AM_TIMEOUT_MS))
         fail("card not mounted after boot");
     pass();
 }
 
-static void automounterHwInsertCard()
+/**
+ * \brief Verify that a manually inserted card is mounted automatically.
+ *
+ * \note Manual hardware test. The board must boot without the SD card.
+ */
+void hwInsertCard()
 {
-    test_name("hw_2 insert card");
-    if(automounterIsMounted())
+    test_name("[hw] [2] insert card");
+    
+    if(isMounted())
         fail("already mounted — reboot without card to run this test");
-    automounterWaitForAck("Insert the SD card now.");
-    if(!automounterWaitSentinel(AM_TIMEOUT_MS))
+    
+    waitForAck("Insert the SD card now.");
+    
+    if(!waitSentinel(AM_TIMEOUT_MS))
         fail("card not mounted after insertion");
     pass();
 }
 
-static void automounterHwRemoveCard()
+/**
+ * \brief Verify that removing the card unmounts `/sd`.
+ *
+ * \note Manual hardware test. The sentinel file must become unreadable.
+ */
+void hwRemoveCard()
 {
-    test_name("hw_3 remove card");
-    if(!automounterWaitSentinel(AM_TIMEOUT_MS))
+    test_name("[hw] [3] remove card");
+    
+    if(!waitSentinel(AM_TIMEOUT_MS))
         fail("card not mounted before removal test");
-    automounterWaitForAck("Remove the SD card now.");
-    if(!automounterWaitMounted(false,AM_TIMEOUT_MS))
+    
+    waitForAck("Remove the SD card now.");
+    
+    if(!waitMounted(false, AM_TIMEOUT_MS))
         fail("/sd still mounted after removal");
-    if(automounterCanReadSentinel())
+    if(canReadSentinel())
         fail("sentinel still readable after removal");
     pass();
 }
 
-static void automounterHwReinsertCard()
+/**
+ * \brief Verify that reinserting the card mounts `/sd` again.
+ *
+ * \note Manual hardware test.
+ */
+void hwReinsertCard()
 {
-    test_name("hw_4 reinsert card");
-    automounterWaitForAck("Reinsert the SD card now.");
-    if(!automounterWaitSentinel(AM_TIMEOUT_MS))
+    test_name("[hw] [4] reinsert card");
+    waitForAck("Reinsert the SD card now.");
+    if(!waitSentinel(AM_TIMEOUT_MS))
         fail("card not mounted after reinsertion");
     pass();
 }
 
+} // namespace
+
+// ---------------------------------------------------------------------------
+// Entry point — outside the anonymous namespace so it matches the forward
+// declaration `static void test_automounter()` in testsuite.cpp.
+// ---------------------------------------------------------------------------
+
+/**
+ * \brief Run SD automounter logic tests and optional hardware tests.
+ */
 static void test_automounter()
 {
-    // Pure logic tests (no hardware needed)
-    automounterLogicTest1();
-    automounterLogicTest2();
-    automounterLogicTest3();
-    automounterLogicTest4();
-    automounterLogicTest5();
+    logicTest1();
+    logicTest2();
+    logicTest3();
+    logicTest4();
+    logicTest5();
 
     #ifndef WITH_AUTOMOUNTER
     iprintf("Automounter hardware tests skipped, WITH_AUTOMOUNTER is disabled\n");
     return;
     #else
-    if(!automounterAskYesNo("Run interactive hardware automounter tests now?"))
+    if(!askYesNo("Run interactive hardware automounter tests now?"))
     {
         iprintf("Interactive hardware automounter tests skipped by user\n");
         return;
     }
 
-    if(automounterAskYesNo("Was the board booted with the SD card already inserted?"))
-        automounterHwBootWithCard();
+    if(askYesNo("Was the board booted with the SD card already inserted?"))
+        hwBootWithCard();
     else
-        automounterHwInsertCard();
+        hwInsertCard();
 
-    if(!automounterIsMounted())
+    if(!isMounted())
     {
-        automounterWaitForAck("Insert the SD card to continue.");
-        if(!automounterWaitSentinel(AM_TIMEOUT_MS))
+        waitForAck("Insert the SD card to continue.");
+        if(!waitSentinel(AM_TIMEOUT_MS))
             fail("could not mount card for removal/reinsert tests");
     }
 
-    automounterHwRemoveCard();
-    automounterHwReinsertCard();
+    hwRemoveCard();
+    hwReinsertCard();
     #endif
 }
 
