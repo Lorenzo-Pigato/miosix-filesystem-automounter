@@ -13,9 +13,14 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <atomic>
+#include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
 
 #include "filesystem/automounter/sd_automounter.h"
+#include "filesystem/ioctl.h"
 
 #ifdef WITH_FILESYSTEM
 #define AM_SENTINEL_DIR  "/sd/automounter_test"
@@ -31,10 +36,10 @@ constexpr unsigned int AM_TIMEOUT_MS  = 5000; ///< general wait timeout
 constexpr unsigned int AM_POLL_MS     = 100;  ///< general polling interval
 constexpr int          AM_DIR_MODE    = 0755; ///< mkdir permissions
 constexpr unsigned int AM_SENTINEL_BUF = 64;  ///< sentinel read buffer size
+constexpr int          AM_FILE_MODE   = 0644; ///< regular file permissions
 
 /// Debounce threshold for logic tests
 constexpr int AM_LOGIC_DEBOUNCE_N = 3;
-
 
 // --------------------------- Helpers -------------------------------------
 
@@ -140,6 +145,8 @@ bool waitSentinel(unsigned int timeoutMs)
     }
     return false;
 }
+
+#include "test_automounter_busy.cpp"
 
 // ------------------------- LOGIC TESTS ---------------------------
 // Test the correctness of the debounce state machine
@@ -371,6 +378,11 @@ static void test_automounter()
 
     hwRemoveCard();
     hwReinsertCard();
+
+    if(askYesNo("Run busy extraction hardware test now?"))
+        hwBusyExtraction();
+    else
+        iprintf("Busy extraction hardware test skipped by user\n");
     #endif
 }
 
