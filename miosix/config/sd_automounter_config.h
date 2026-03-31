@@ -15,7 +15,7 @@
  *
  * Hardware-specific card-detect wiring stays in the board's
  * board_settings.h. This header only collects behavior and tuning options
- * that are shared by the automounter implementation and the BSP glue code.
+ * that are shared by the automounter implementation and the BSP.
  */
 
 /// Enable automounter debug logs.

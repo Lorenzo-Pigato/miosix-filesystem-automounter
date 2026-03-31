@@ -133,30 +133,24 @@ static const unsigned char sdVoltage=30; //Board powered @ 3.0V
 #endif
 
 // Optional short form to configure the CD pin with one macro:
-// #define SD_AUTOMOUNTER_CD_GPIO Gpio<PC,0>
-//
-// Legacy form (still supported):
-// #define SD_AUTOMOUNTER_CD_PORT PC
-// #define SD_AUTOMOUNTER_CD_PIN  0
+#if WITH_SD_CD_PIN
+#define SD_AUTOMOUNTER_CD_GPIO Gpio<PC,1>
+#endif
+
 #if WITH_SD_CD_PIN
 #if defined(SD_AUTOMOUNTER_CD_GPIO)
 using sdAutomounterCardDetectPin = SD_AUTOMOUNTER_CD_GPIO;
-#elif defined(SD_AUTOMOUNTER_CD_PORT) && defined(SD_AUTOMOUNTER_CD_PIN)
-using sdAutomounterCardDetectPin = Gpio<SD_AUTOMOUNTER_CD_PORT, SD_AUTOMOUNTER_CD_PIN>;
 #else
-class SdAutomounterInvalidCdPin
-{
-public:
-    static void mode(Mode) {}
-    static int value() { return 0; }
-};
-using sdAutomounterCardDetectPin = SdAutomounterInvalidCdPin;
-#error "Define SD_AUTOMOUNTER_CD_GPIO (recommended) or SD_AUTOMOUNTER_CD_PORT+SD_AUTOMOUNTER_CD_PIN when SD_AUTOMOUNTER_HARDWARE is 1"
+#error "Define SD_AUTOMOUNTER_CD_GPIO when WITH_SD_CD_PIN is 1"
 #endif
 #endif
 
-/**
- * \}
- */
+// Optional measurement pin used by the SD automounter timing hook.
+// Define this macro to any free GPIO if you want a pulse that spans the whole
+// insertion/removal handling.
+#define SD_AUTOMOUNTER_TIMING_GPIO Gpio<PD, 14>
+#if defined(SD_AUTOMOUNTER_TIMING_GPIO)
+using sdAutomounterTimingPin = SD_AUTOMOUNTER_TIMING_GPIO;
+#endif
 
 } //namespace miosix

@@ -181,7 +181,7 @@ namespace miosix
         bool ensureSdMountpoint();
 
         bool mountSd();
-        void unmountSd();
+        bool unmountSd();
         bool tryMountFat32(intrusive_ref_ptr<FileBase>& disk);
         bool tryMountLittleFs(intrusive_ref_ptr<FileBase>& disk);
 
