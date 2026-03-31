@@ -24,17 +24,17 @@
 #include "filesystem/littlefs/lfs_miosix.h"
 
 #if AUTOMOUNTER_DEBUG_LOG
-#define SD_AUTO_LOG(fmt, ...) printf("[SdAutomounter] " fmt, ##__VA_ARGS__)
+#define AUTOMOUNTER_LOG(fmt, ...) printf("[SdAutomounter] " fmt, ##__VA_ARGS__)
 #else
-#define SD_AUTO_LOG(fmt, ...) do { } while(0)
+#define AUTOMOUNTER_LOG(fmt, ...) do { } while(0)
 #endif
 
 namespace miosix
 {
 
-#if AUTOMOUNTER_DEBUG_LOG
     namespace
     {
+        #if AUTOMOUNTER_DEBUG_LOG
         const char *errnoName(int error)
         {
             if (error < 0)
@@ -56,8 +56,63 @@ namespace miosix
                 default: return "UNKNOWN";
             }
         }
+        #endif
+
+        // The GPIO pin used for timing measurements of the SD automounter can be
+        // optionally defined in board_settings.h
+        #if defined(SD_AUTOMOUNTER_TIMING_GPIO)
+        void initTimingPin()
+        {
+            static bool initialized = false;
+            if (initialized)
+                return;
+
+            sdAutomounterTimingPin::mode(Mode::OUTPUT);
+            sdAutomounterTimingPin::low();
+            initialized = true;
+        }
+
+        class TimingLogger
+        {
+        public:
+            explicit TimingLogger(const char *event)
+                : event(event), startNs(getTime()), finished(false)
+            {
+                initTimingPin();
+                sdAutomounterTimingPin::high();
+            }
+
+            void finish(const char *outcome)
+            {
+                if (finished)
+                    return;
+
+                const long long elapsedNs = getTime() - startNs;
+                sdAutomounterTimingPin::low();
+                printf("[TimeLog] %s %s: %lld ns\n", event, outcome, elapsedNs);
+                finished = true;
+            }
+
+            ~TimingLogger()
+            {
+                finish("aborted");
+            }
+
+        private:
+            const char *event;
+            long long startNs;
+            bool finished;
+        };
+        #else
+
+        class TimingLogger
+        {
+        public:
+            explicit TimingLogger(const char *) {}
+            void finish(const char *) {}
+        };
+        #endif
     }
-#endif
 
     SdAutomounter &SdAutomounter::instance()
     {
@@ -99,7 +154,7 @@ namespace miosix
         // This allows mounting an already-inserted card at boot.
         sdMounted = false;
 
-        SD_AUTO_LOG("Configured: poll: %dms\tdebounce: %d\tstate: %s\n",
+        AUTOMOUNTER_LOG("Configured: poll: %dms\tdebounce: %d\tstate: %s\n",
                     this->pollMs,
                     SD_AUTOMOUNTER_DEBOUNCE_SAMPLES,
                     pollingState.isPresent() ? "present" : "absent");
@@ -109,10 +164,10 @@ namespace miosix
             worker = Thread::create(threadTrampoline, 2048, 1, this, Thread::JOINABLE);
             if (worker == nullptr)
             {
-                SD_AUTO_LOG("Failed to create worker thread\n");
+                AUTOMOUNTER_LOG("Failed to create worker thread\n");
                 return;
             }
-            SD_AUTO_LOG("Worker thread created\n");
+            AUTOMOUNTER_LOG("Worker thread created\n");
         }
 
         configured.store(true);
@@ -122,7 +177,7 @@ namespace miosix
     void SdAutomounter::enable()
     {
         enabled.store(true);
-        SD_AUTO_LOG("Enabled\n");
+        AUTOMOUNTER_LOG("Enabled\n");
         
         Lock<Mutex> l(mtx);
         cv.signal();
@@ -131,7 +186,7 @@ namespace miosix
     void SdAutomounter::disable()
     {
         enabled.store(false);
-        SD_AUTO_LOG("Disabled\n");
+        AUTOMOUNTER_LOG("Disabled\n");
         
         Lock<Mutex> l(mtx);
         cv.signal();
@@ -144,7 +199,7 @@ namespace miosix
             return;
 
         enabled.store(false);
-        SD_AUTO_LOG("Stopping worker thread\n");
+        AUTOMOUNTER_LOG("Stopping worker thread\n");
         {
             Lock<Mutex> l(mtx);
             cv.signal();
@@ -153,7 +208,7 @@ namespace miosix
         localWorker->terminate();
         localWorker->join();
         worker = nullptr;
-        SD_AUTO_LOG("Worker thread stopped\n");
+        AUTOMOUNTER_LOG("Worker thread stopped\n");
     }
     
     void *SdAutomounter::threadTrampoline(void *automounterInstance)
@@ -173,14 +228,14 @@ namespace miosix
         ResolvedPath resolved = FilesystemManager::instance().resolvePath(root, false);
         if (resolved.result < 0 || !resolved.fs)
         {
-            SD_AUTO_LOG("Cannot resolve root filesystem (%s)\n", errnoName(resolved.result));
+            AUTOMOUNTER_LOG("Cannot resolve root filesystem (%s)\n", errnoName(resolved.result));
             return false;
         }
 
         StringPart sd("sd");
         int result = resolved.fs->mkdir(sd, 0755);
         if (result != 0 && result != -EEXIST)
-            SD_AUTO_LOG("Cannot create /sd mountpoint (%s)\n", errnoName(result));
+            AUTOMOUNTER_LOG("Cannot create /sd mountpoint (%s)\n", errnoName(result));
         return result == 0 || result == -EEXIST;
     }
 
@@ -188,12 +243,12 @@ namespace miosix
     {
         if (!storage)
         {
-            SD_AUTO_LOG("No storage device configured\n");
+            AUTOMOUNTER_LOG("No storage device configured\n");
             return -ENODEV;
         }
         int result=storage->open(disk, intrusive_ref_ptr<FilesystemBase>(), O_RDWR, 0);
         if(result<0)
-            SD_AUTO_LOG("Cannot open storage device (%s)\n", errnoName(result));
+            AUTOMOUNTER_LOG("Cannot open storage device (%s)\n", errnoName(result));
         return result;
     }
 
@@ -206,9 +261,9 @@ namespace miosix
 
         int result = FilesystemManager::instance().kmount("/sd", fs);
         if (result == -EBUSY)
-            SD_AUTO_LOG("/sd is already mounted (EBUSY)\n");
+            AUTOMOUNTER_LOG("/sd is already mounted (EBUSY)\n");
         else if (result < 0)
-            SD_AUTO_LOG("FAT32 mount failed (%s)\n", errnoName(result));
+            AUTOMOUNTER_LOG("FAT32 mount failed (%s)\n", errnoName(result));
         return result == 0 || result == -EBUSY;
         #else
         (void)disk;
@@ -225,9 +280,9 @@ namespace miosix
 
         int result = FilesystemManager::instance().kmount("/sd", fs);
         if (result == -EBUSY)
-            SD_AUTO_LOG("/sd is already mounted (EBUSY)\n");
+            AUTOMOUNTER_LOG("/sd is already mounted (EBUSY)\n");
         else if (result < 0)
-            SD_AUTO_LOG("LittleFS mount failed (%s)\n", errnoName(result));
+            AUTOMOUNTER_LOG("LittleFS mount failed (%s)\n", errnoName(result));
         return result == 0 || result == -EBUSY;
         #else
         (void)disk;
@@ -237,57 +292,57 @@ namespace miosix
 
     bool SdAutomounter::mountSd()
     {
-        if (Thread::testTerminate())
-            return false;
+        if (Thread::testTerminate()) return false;
         if (sdMounted)
         {
-            SD_AUTO_LOG("Card already mounted, skipping mount\n");
+            AUTOMOUNTER_LOG("Card already mounted, skipping mount\n");
             return true;
         }
-        if (!ensureSdMountpoint())
-            return false;
-        if (Thread::testTerminate())
-            return false;
+        
+        if (!ensureSdMountpoint()) return false;
+        if (Thread::testTerminate()) return false;
+        
         if (reinitBeforeMount && storage)
         {
             // Before probing a filesystem, bring the card back to a known
             // transfer state and let the driver recalibrate its final bus
-            // width/clock. Raw presence probing alone is not enough to
+            // width/clock. 
+            //
+            // Raw presence probing alone is not enough to
             // guarantee that the subsequent mount sees consistent data.
+
             int reinitResult = storage->ioctl(IOCTL_REINIT, nullptr);
             if (reinitResult < 0)
-                SD_AUTO_LOG("Storage reinit failed (%s)\n",
+                AUTOMOUNTER_LOG("Storage reinit failed (%s)\n",
                             errnoName(reinitResult));
         }
-        if (Thread::testTerminate())
-            return false;
+        if (Thread::testTerminate()) return false;
 
         intrusive_ref_ptr<FileBase> disk;
-        if (openDisk(disk) < 0)
-            return false;
-        if (Thread::testTerminate())
-            return false;
+        if (openDisk(disk) < 0) return false;
+        if (Thread::testTerminate()) return false;
 
         // Try all enabled filesystems in the same order used at boot.
         if (tryMountFat32(disk))
         {
             sdMounted = true;
-            SD_AUTO_LOG("Mounted /sd using FAT32\n");
+            AUTOMOUNTER_LOG("Mounted /sd using FAT32\n");
             return true;
         }
-        if (Thread::testTerminate())
-            return false;
+        if (Thread::testTerminate()) return false;
+
         if (tryMountLittleFs(disk))
         {
             sdMounted = true;
-            SD_AUTO_LOG("Mounted /sd using LittleFS\n");
+            AUTOMOUNTER_LOG("Mounted /sd using LittleFS\n");
             return true;
         }
-        SD_AUTO_LOG("No supported filesystem detected on card\n");
+        
+        AUTOMOUNTER_LOG("No supported filesystem detected on card\n");
         return false;
     }
 
-    void SdAutomounter::unmountSd()
+    bool SdAutomounter::unmountSd()
     {
         // Clearing before the actual umount is safe: mount and unmount only
         // run on the single worker thread, so no insertion edge can race here.
@@ -302,24 +357,30 @@ namespace miosix
             int result = fsm.umount("/sd", false);
             if (result == 0 || result == -EINVAL)
             {
-                SD_AUTO_LOG("Unmounted /sd\n");
-                return;
+                AUTOMOUNTER_LOG("Unmounted /sd\n");
+                return true;
             }
             if (result != -EBUSY)
             {
-                SD_AUTO_LOG("Unmount failed (%s)\n", errnoName(result));
+                AUTOMOUNTER_LOG("Unmount failed (%s)\n", errnoName(result));
                 break;
             }
-            SD_AUTO_LOG("Unmount busy, retrying (%d/%d)\n", i + 1, retries);
+            AUTOMOUNTER_LOG("Unmount busy, retrying (%d/%d)\n", i + 1, retries);
             Thread::sleep(SD_AUTOMOUNTER_UNMOUNT_RETRY_DELAY_MS);
         }
 
         // Forced umount is a last resort used when handles are still open.
         int forced=fsm.umount("/sd", true);
         if (forced == 0 || forced == -EINVAL)
-            SD_AUTO_LOG("Forced unmount completed\n");
+        {
+            AUTOMOUNTER_LOG("Forced unmount completed\n");
+            return true;
+        }
         else
-            SD_AUTO_LOG("Forced unmount failed (%s)\n", errnoName(forced));
+        {
+            AUTOMOUNTER_LOG("Forced unmount failed (%s)\n", errnoName(forced));
+            return false;
+        }
     }
 
     void SdAutomounter::run()
@@ -346,7 +407,7 @@ namespace miosix
             #if AUTOMOUNTER_DEBUG_LOG
             if (raw != lastRawForLog)
             {
-                SD_AUTO_LOG("Physical detect changed: %s\n",
+                AUTOMOUNTER_LOG("Detected raw status change: now %s\n",
                             raw ? "present" : "absent");
                 lastRawForLog = raw;
             }
@@ -359,31 +420,43 @@ namespace miosix
             {
                 if (edge == SdAutomounterEdge::Inserted)
                 {
-                    SD_AUTO_LOG("Debounced insertion detected\n");
+                    TimingLogger timing("inserted");
+                    AUTOMOUNTER_LOG("Stable insertion detected\n");
                     //Retry mount a few times. Bus-level CRC errors can
                     //cause intermittent read failures, but retrying
                     //usually succeeds.
                     const int retries = SD_AUTOMOUNTER_MOUNT_RETRY_COUNT > 0
                         ? SD_AUTOMOUNTER_MOUNT_RETRY_COUNT
                         : 1;
+                    bool mounted = false;
                     for (int attempt = 0; attempt < retries; attempt++)
                     {
-                        if (mountSd()) break;
-                        SD_AUTO_LOG("Mount attempt %d/%d failed, retrying\n",
+                        if (mountSd())
+                        {
+                            mounted = true;
+                            break;
+                        }
+                        AUTOMOUNTER_LOG("Mount attempt %d/%d failed, retrying\n",
                                     attempt + 1, retries);
                         if (Thread::testTerminate()) break;
                         Thread::sleep(SD_AUTOMOUNTER_MOUNT_RETRY_DELAY_MS);
                     }
+                    
+                    timing.finish(mounted ? "success"
+                                          : (Thread::testTerminate() ? "aborted"
+                                                                     : "failure"));
                 }
                 else
                 {
-                    SD_AUTO_LOG("Debounced removal detected\n");
-                    unmountSd();
+                    AUTOMOUNTER_LOG("Removal detected stably\n");
+                    TimingLogger timing("removed");
+                    
+                    timing.finish(unmountSd() ? "success" : "failure");
                 }
             }
 
-            if (Thread::testTerminate())
-                break;
+            if (Thread::testTerminate()) break;
+
             Thread::sleep(pollMs);
         }
     }

@@ -27,8 +27,15 @@ namespace miosix
     /**
      * \brief Self-contained polling state for the SD automounter debounce logic.
      *
-     * N is the number of consecutive stable samples required to accept a state
-     * change (compile-time constant, defaults to SD_AUTOMOUNTER_DEBOUNCE_SAMPLES).
+     * This state machine is intentionally kept independent from the worker
+     * thread and from the rest of SdAutomounter so that the debounce logic can
+     * be directly tested deterministically.
+     *
+     * \tparam requiredStableSamples is the number of consecutive stable samples 
+     * required to accept a state change. It is part of the type, so tests can 
+     * instantiate the polling state with a compile-time debounce threshold and 
+     * validate edge generation without runtime configuration.
+     *
      * A static_assert prevents invalid values at compile time.
      */
     template<int requiredStableSamples = SD_AUTOMOUNTER_DEBOUNCE_SAMPLES>
@@ -174,7 +181,7 @@ namespace miosix
         bool ensureSdMountpoint();
 
         bool mountSd();
-        void unmountSd();
+        bool unmountSd();
         bool tryMountFat32(intrusive_ref_ptr<FileBase>& disk);
         bool tryMountLittleFs(intrusive_ref_ptr<FileBase>& disk);
 

@@ -111,10 +111,21 @@ void IRQbspInit()
 static bool sdCardPresentBySdio()
 {
     // SDIODriver::readBlock requires a full 512-byte block
+    
     static unsigned char buf[512];
     intrusive_ref_ptr<SDIODriver> sd = SDIODriver::instance();
 
-    // Backoff: try to reinit at most once every ~5 seconds when card is absent
+    // Reinitialization is carried out to bring the card to a known state
+    // after a fault or removal, avoiding it from hanging stuck.
+    //
+    // Reinit is performed only after a certain number of failed attempts
+    // in correctly reading the first block. This number is defined by the 
+    // macro SD_AUTOMOUNTER_SDIO_REINIT_BACKOFF_POLLS
+    //
+    // This is done to avoid trying to reinit every time a read fails,
+    // which can be caused by the absence of the SD card instead of an
+    // actual error
+
     static int reinitCountdown = 0;
     if (reinitCountdown > 0)
         reinitCountdown--;
