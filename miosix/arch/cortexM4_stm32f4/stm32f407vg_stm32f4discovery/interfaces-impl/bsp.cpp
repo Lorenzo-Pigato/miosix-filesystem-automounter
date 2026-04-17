@@ -183,7 +183,8 @@ void bspInit2()
         // performs successful readBlock() calls, so the card is fully
         // initialized. Reinit before mount would disrupt this working
         // state and can cause corrupt reads.
-        SdAutomounter::instance().configure(sd, &sdCardPresentBySdio,
+        SdAutomounter::instance().configure(sd, 
+                                            &sdCardPresentBySdio,
                                             SD_AUTOMOUNTER_POLL_MS,
                                             SD_AUTOMOUNTER_REINIT_BEFORE_MOUNT_WITH_SDIO_PROBE);
         AUTOMOUNTER_LOG("Mode: SDIO software probing\n");

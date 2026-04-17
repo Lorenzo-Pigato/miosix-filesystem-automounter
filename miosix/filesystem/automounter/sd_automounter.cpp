@@ -34,6 +34,9 @@ namespace miosix
 
     namespace
     {
+        const int automounterWorkerStack = 2048;
+        const int automounterWorkerPriority = 1;
+
         #if AUTOMOUNTER_DEBUG_LOG
         const char *errnoName(int error)
         {
@@ -161,7 +164,11 @@ namespace miosix
 
         if (worker == nullptr)
         {
-            worker = Thread::create(threadTrampoline, 2048, 1, this, Thread::JOINABLE);
+            worker = Thread::create(threadTrampoline, 
+                                    automounterWorkerStack,
+                                    automounterWorkerPriority, 
+                                    this,
+                                    Thread::JOINABLE);
             if (worker == nullptr)
             {
                 AUTOMOUNTER_LOG("Failed to create worker thread\n");

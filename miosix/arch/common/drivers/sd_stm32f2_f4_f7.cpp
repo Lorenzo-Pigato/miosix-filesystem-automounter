@@ -121,7 +121,7 @@ static volatile bool dmaTransferError;  ///< \internal DMA transfer error
 static volatile bool sdioTransferError; ///< \internal SDIO transfer error
 static volatile bool dmaDone;           ///< \internal DMA TC received (no error) — read path
 static volatile bool sdioDone;          ///< \internal SDIO DATAEND received (no error)
-static volatile bool waitForDmaToo;     ///< \internal Read path: require both DMA TC and SDIO DATAEND
+static volatile bool waitForDma;        ///< \internal Read path: require both DMA TC and SDIO DATAEND
 static Thread *waiting;                 ///< \internal Thread waiting for transfer
 static unsigned int dmaFlags;           ///< \internal DMA status flags
 static unsigned int sdioFlags;          ///< \internal SDIO status flags
@@ -129,13 +129,13 @@ static unsigned int sdioFlags;          ///< \internal SDIO status flags
 /**
  * \internal
  * Called from ISR context only. Wakes the waiting thread when the transfer is
- * fully complete (or on any error). For reads (waitForDmaToo==true), both DMA TC
+ * fully complete (or on any error). For reads (waitForDma==true), both DMA TC
  * and SDIO DATAEND must have been observed; for writes, SDIO DATAEND alone suffices.
  */
 static void maybeWakeWaitingThread()
 {
     if(!waiting) return;
-    bool ready = waitForDmaToo ? (dmaDone && sdioDone) : sdioDone;
+    bool ready = waitForDma ? (dmaDone && sdioDone) : sdioDone;
     if(ready || dmaTransferError || sdioTransferError)
     {
         waiting->IRQwakeup();
@@ -771,6 +771,8 @@ public:
     static unsigned char getRetryCount() { return retries; }
 
 private:
+    // SDIODriver needs access to these internals to run clock calibration
+    // while keeping reinit and calibration inside one locked driver operation.
     friend class SDIODriver;
 
     /**
@@ -926,7 +928,7 @@ static unsigned int dmaTransferCommonSetup(const unsigned char *buffer, bool rea
     sdioTransferError=false;
     dmaDone=false;
     sdioDone=false;
-    waitForDmaToo=readMode;
+    waitForDma=readMode;
     dmaFlags=sdioFlags=0;
     waiting=Thread::getCurrentThread();
     

@@ -1,0 +1,39 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build Miosix",
+      "type": "shell",
+      "command": "make",
+      "args": [
+        "-j4",
+        "main"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [
+        "$gcc"
+      ]
+    },
+    {
+      "label": "Build testsuite",
+      "type": "shell",
+      "command": "make",
+      "args": [
+        "-j4",
+        "main"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/miosix/_tools/testsuite"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": [
+        "$gcc"
+      ]
+    }
+  ]
+}

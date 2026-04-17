@@ -1,0 +1,49 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Miosix",
+      "type": "cortex-debug",
+      "request": "launch",
+      "servertype": "openocd",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/main.elf",
+      "serverpath": "/usr/bin/openocd",
+      "gdbPath": "/usr/bin/arm-miosix-eabi-gdb",
+      "armToolchainPath": "/usr/bin",
+      "toolchainPrefix": "arm-miosix-eabi",
+      "configFiles": [
+        "${workspaceFolder}/.vscode/openocd-stm32f4discovery-vscode.cfg"
+      ],
+      "openOCDLaunchCommands": [
+        "init",
+        "reset halt"
+      ],
+      "runToEntryPoint": "main",
+      "preLaunchTask": "Build Miosix",
+      "showDevDebugOutput": "none"
+    },
+    {
+      "name": "Miosix Testsuite (STM32F4Discovery)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "servertype": "openocd",
+      "cwd": "${workspaceFolder}/miosix/_tools/testsuite",
+      "executable": "${workspaceFolder}/miosix/_tools/testsuite/main.elf",
+      "serverpath": "/usr/bin/openocd",
+      "gdbPath": "/usr/bin/arm-miosix-eabi-gdb",
+      "armToolchainPath": "/usr/bin",
+      "toolchainPrefix": "arm-miosix-eabi",
+      "configFiles": [
+        "${workspaceFolder}/.vscode/openocd-stm32f4discovery-vscode.cfg"
+      ],
+      "openOCDLaunchCommands": [
+        "init",
+        "reset halt"
+      ],
+      "runToEntryPoint": "main",
+      "preLaunchTask": "Build testsuite",
+      "showDevDebugOutput": "none"
+    }
+  ]
+}

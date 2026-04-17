@@ -119,7 +119,7 @@ namespace miosix
                         bool reinitBeforeMount = SD_AUTOMOUNTER_REINIT_BEFORE_MOUNT_DEFAULT);
 
         /**
-         * Enable/disable at runtime.
+         * Enable/disable automounter at runtime.
          */
         void enable();
         void disable();
@@ -131,8 +131,8 @@ namespace miosix
          * further polling activity, requests cooperative thread termination,
          * and waits until the worker exits.
          *
-         * The stop operation is idempotent and one-way: after it returns the
-         * automounter is no longer running and must not be restarted.
+         * After the stop operation returns, the automounter is no longer
+         * running and must not be restarted.
          */
         void stop();
 
@@ -147,8 +147,8 @@ namespace miosix
          * \brief Thread entry point for the SD automounter worker.
          *
          * Miosix `Thread::create()` expects a static member function,
-         * while `run()` is a non-static member function that needs to
-         * access instance members.
+         * while `run()` is a non-static member function of the SD 
+         * automounter that needs to access instance members.
          *
          * This helper converts the generic thread argument back to an
          * SdAutomounter object and starts its main loop.
@@ -186,13 +186,13 @@ namespace miosix
         bool tryMountLittleFs(intrusive_ref_ptr<FileBase>& disk);
 
         /**
-         * \brief Open the configured storage device.
+         * \brief Open the configured storage device for mounting.
          *
-         * This method opens the underlying block device used for SD mounting
-         * and stores the resulting handle in the output parameter.
+         * This method opens the provided storage device representing the SD card
+         * and stores the resulting FileBase object in `disk` on success.
          *
-         * \param disk output reference that receives the opened device handle
-         * \return 0 on success, or a negative error code on failure
+         * \param disk output reference that receives the opened device object
+         * \return 0 on success, or a error code on failure
          */
         int openDisk(intrusive_ref_ptr<FileBase>& disk);
 
