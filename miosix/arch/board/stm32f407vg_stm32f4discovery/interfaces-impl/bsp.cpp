@@ -47,6 +47,13 @@
 #include "interfaces/serial.h"
 #include "drivers/sdmmc/stm32f2_f4_f7_sd.h"
 #include "board_settings.h"
+#include "filesystem/automounter/sd_automounter.h"
+
+#if AUTOMOUNTER_DEBUG_LOG
+#define AUTOMOUNTER_LOG(fmt, ...) printf("[BSP] " fmt, ##__VA_ARGS__)
+#else
+#define AUTOMOUNTER_LOG(fmt, ...) do { } while(0)
+#endif
 
 namespace miosix {
 
@@ -83,20 +90,134 @@ void IRQbspInit()
         defaultSerialRtsPin,defaultSerialCtsPin>(
             defaultSerial,defaultSerialSpeed,
             defaultSerialFlowctrl,defaultSerialDma));
+
+    #if defined(WITH_AUTOMOUNTER) && WITH_SD_CD_PIN
+    #if SD_AUTOMOUNTER_CD_PULL==SD_AUTOMOUNTER_CD_PULL_UP
+    sdAutomounterCardDetectPin::mode(Mode::INPUT_PULL_UP);
+    #elif SD_AUTOMOUNTER_CD_PULL==SD_AUTOMOUNTER_CD_PULL_DOWN
+    sdAutomounterCardDetectPin::mode(Mode::INPUT_PULL_DOWN);
+    #elif SD_AUTOMOUNTER_CD_PULL==SD_AUTOMOUNTER_CD_PULL_NONE
+    sdAutomounterCardDetectPin::mode(Mode::INPUT);
+    #else
+    #error "Invalid SD_AUTOMOUNTER_CD_PULL value"
+    #endif
+    #endif
 }
+
+#ifdef WITH_AUTOMOUNTER
+#if WITH_SD_CD_PIN==0
+static bool sdCardPresentBySdio()
+{
+    // SDIODriver::readBlock requires a full 512-byte block.
+    static unsigned char buf[512];
+    intrusive_ref_ptr<SDIODriver> sd = SDIODriver::instance();
+
+    // Reinitialization is carried out to bring the card to a known state
+    // after a fault or removal, avoiding it from hanging stuck.
+    //
+    // Reinit is performed only after a certain number of failed attempts
+    // in correctly reading the first block. This number is defined by the
+    // macro SD_AUTOMOUNTER_SDIO_REINIT_BACKOFF_POLLS.
+    //
+    // This avoids reinitializing every time a read fails, which can also
+    // happen simply because no card is present.
+    static int reinitCountdown = 0;
+    if (reinitCountdown > 0)
+        reinitCountdown--;
+
+    ssize_t r = sd->readBlock(buf, sizeof(buf), 0);
+    if (r == 512)
+        return true;
+
+    if (reinitCountdown == 0)
+    {
+        sd->ioctl(IOCTL_REINIT, nullptr);
+        reinitCountdown = SD_AUTOMOUNTER_SDIO_REINIT_BACKOFF_POLLS;
+    }
+
+    return false;
+}
+#endif
+
+#if WITH_SD_CD_PIN
+static bool sdCardPresentByCd()
+{
+    bool cd = sdAutomounterCardDetectPin::value() != 0;
+    #if SD_AUTOMOUNTER_CD_POLARITY==SD_AUTOMOUNTER_CD_ACTIVE_LOW
+    return !cd;
+    #elif SD_AUTOMOUNTER_CD_POLARITY==SD_AUTOMOUNTER_CD_ACTIVE_HIGH
+    return cd;
+    #else
+    #error "Invalid SD_AUTOMOUNTER_CD_POLARITY value"
+    #endif
+}
+#endif
+#endif //WITH_AUTOMOUNTER
 
 void bspInit2()
 {
     #ifdef WITH_FILESYSTEM
-    #ifdef AUX_SERIAL
+    #ifdef WITH_AUTOMOUNTER
+    {
+        intrusive_ref_ptr<SDIODriver> sd = SDIODriver::instance();
+        basicFilesystemSetup(intrusive_ref_ptr<Device>());
+        #ifdef WITH_DEVFS
+        intrusive_ref_ptr<DevFs> devFs = FilesystemManager::instance().getDevFs();
+        if(devFs)
+        {
+            // /dev/sda is exposed statically because the SD driver exists even
+            // when no card is mounted. The automounter is responsible only for
+            // mounting and unmounting /sd on top of that raw device.
+            //
+            // The fixed "sda" name is acceptable for the current single-device
+            // setup. If more removable block devices are added later, naming
+            // will need a more careful policy.
+            if(devFs->addDevice("sda", sd)==false)
+                AUTOMOUNTER_LOG("DevFs device /dev/sda already present\n");
+
+            #ifdef AUX_SERIAL
+            devFs->addDevice(AUX_SERIAL,
+                STM32SerialBase::get<auxSerialTxPin,auxSerialRxPin,
+                auxSerialRtsPin,auxSerialCtsPin>(
+                    auxSerial,auxSerialSpeed,auxSerialFlowctrl,auxSerialDma));
+            #endif //AUX_SERIAL
+        } else {
+            AUTOMOUNTER_LOG("DevFs unavailable, /dev/sda not created\n");
+        }
+        #endif //WITH_DEVFS
+
+        #if WITH_SD_CD_PIN
+        SdAutomounter::instance().configure(sd, &sdCardPresentByCd,
+                                            SD_AUTOMOUNTER_POLL_MS,
+                                            SD_AUTOMOUNTER_REINIT_BEFORE_MOUNT_WITH_CD);
+        AUTOMOUNTER_LOG("Mode: hardware CD\n");
+        #else
+        // In SDIO software probing mode, the probe function already performs
+        // successful readBlock() calls, so the card is fully initialized.
+        // Reinit before mount would disrupt this working state and can cause
+        // corrupt reads.
+        SdAutomounter::instance().configure(sd,
+                                            &sdCardPresentBySdio,
+                                            SD_AUTOMOUNTER_POLL_MS,
+                                            SD_AUTOMOUNTER_REINIT_BEFORE_MOUNT_WITH_SDIO_PROBE);
+        AUTOMOUNTER_LOG("Mode: SDIO software probing\n");
+        #endif
+
+        SdAutomounter::instance().enable();
+        AUTOMOUNTER_LOG("Automounter enabled\n");
+    }
+
+    #else //WITH_AUTOMOUNTER
+    #if defined(AUX_SERIAL) && defined(WITH_DEVFS)
     intrusive_ref_ptr<DevFs> devFs=basicFilesystemSetup(SDIODriver::instance());
     devFs->addDevice(AUX_SERIAL,
         STM32SerialBase::get<auxSerialTxPin,auxSerialRxPin,
         auxSerialRtsPin,auxSerialCtsPin>(
             auxSerial,auxSerialSpeed,auxSerialFlowctrl,auxSerialDma));
-    #else //AUX_SERIAL
+    #else //AUX_SERIAL && WITH_DEVFS
     basicFilesystemSetup(SDIODriver::instance());
-    #endif //AUX_SERIAL
+    #endif //AUX_SERIAL && WITH_DEVFS
+    #endif //WITH_AUTOMOUNTER
     #endif //WITH_FILESYSTEM
 }
 
@@ -122,6 +243,9 @@ void shutdown()
     ioctl(STDOUT_FILENO,IOCTL_SYNC,0);
 
     #ifdef WITH_FILESYSTEM
+    #ifdef WITH_AUTOMOUNTER
+    SdAutomounter::instance().stop();
+    #endif //WITH_AUTOMOUNTER
     FilesystemManager::instance().umountAll();
     #endif //WITH_FILESYSTEM
 
@@ -134,6 +258,9 @@ void reboot()
     ioctl(STDOUT_FILENO,IOCTL_SYNC,0);
     
     #ifdef WITH_FILESYSTEM
+    #ifdef WITH_AUTOMOUNTER
+    SdAutomounter::instance().stop();
+    #endif //WITH_AUTOMOUNTER
     FilesystemManager::instance().umountAll();
     #endif //WITH_FILESYSTEM
 

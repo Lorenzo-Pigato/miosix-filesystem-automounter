@@ -26,7 +26,7 @@ include $(KPATH)/Makefile.kcommon
 ##
 ## List here your source files (both .s, .c and .cpp)
 ##
-SRC := testsuite.cpp
+SRC := testsuite.cpp test_automounter.cpp
 
 ##
 ## List here additional include directories (in the form -Iinclude_dir)

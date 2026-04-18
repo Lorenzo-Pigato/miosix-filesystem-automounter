@@ -113,6 +113,57 @@ using auxSerialCtsPin = Gpio<PA,0>;
 static const unsigned char sdVoltage=30; //Board powered @ 3.0V
 #define SD_ONE_BIT_DATABUS //Can't use 4 bit databus due to pin conflicts
 
+//
+// SD automounter hardware wiring
+//
+// Behavior and timing settings live in config/sd_automounter_config.h.
+// Detection mode selector:
+// - 0: SDIO software probing
+// - 1: Hardware card-detect pin (CD)
+#ifndef WITH_SD_CD_PIN
+#define WITH_SD_CD_PIN 0
+#endif
+
+#if WITH_SD_CD_PIN!=0 && WITH_SD_CD_PIN!=1
+#error "SD_AUTOMOUNTER_HARDWARE must be 0 (SDIO) or 1 (CD pin)"
+#endif
+
+// Hardware CD logic configuration.
+#define SD_AUTOMOUNTER_CD_ACTIVE_LOW  0
+#define SD_AUTOMOUNTER_CD_ACTIVE_HIGH 1
+#ifndef SD_AUTOMOUNTER_CD_POLARITY
+#define SD_AUTOMOUNTER_CD_POLARITY SD_AUTOMOUNTER_CD_ACTIVE_LOW
+#endif
+
+// Hardware CD input mode.
+#define SD_AUTOMOUNTER_CD_PULL_NONE  0
+#define SD_AUTOMOUNTER_CD_PULL_UP    1
+#define SD_AUTOMOUNTER_CD_PULL_DOWN  2
+#ifndef SD_AUTOMOUNTER_CD_PULL
+#define SD_AUTOMOUNTER_CD_PULL SD_AUTOMOUNTER_CD_PULL_UP
+#endif
+
+// Optional short form to configure the CD pin with one macro:
+#if WITH_SD_CD_PIN
+#define SD_AUTOMOUNTER_CD_GPIO Gpio<PC,1>
+#endif
+
+#if WITH_SD_CD_PIN
+#if defined(SD_AUTOMOUNTER_CD_GPIO)
+using sdAutomounterCardDetectPin = SD_AUTOMOUNTER_CD_GPIO;
+#else
+#error "Define SD_AUTOMOUNTER_CD_GPIO when WITH_SD_CD_PIN is 1"
+#endif
+#endif
+
+// Optional measurement pin used by the SD automounter timing hook.
+// Define this macro to any free GPIO if you want a pulse that spans the whole
+// insertion/removal handling.
+#define SD_AUTOMOUNTER_TIMING_GPIO Gpio<PD, 14>
+#if defined(SD_AUTOMOUNTER_TIMING_GPIO)
+using sdAutomounterTimingPin = SD_AUTOMOUNTER_TIMING_GPIO;
+#endif
+
 /**
  * \}
  */
