@@ -74,6 +74,7 @@ static_assert(sizeof(time_t)==8,"time_t is not 64 bit");
 
 // Kercalls tests (shared with syscalls)
 #include "test_syscalls.h"
+#include "test_automounter.h"
 
 using namespace std;
 using namespace miosix;
@@ -139,7 +140,6 @@ static void benchmark_1();
 static void benchmark_2();
 static void benchmark_3();
 static void benchmark_4();
-static void test_automounter();
 //Exception thread safety test
 #ifndef __NO_EXCEPTIONS
 static void exception_test();
@@ -4416,7 +4416,6 @@ void testCacheAndDMA()
 //
 
 #include "test_syscalls.cpp"
-#include "test_automounter.cpp"
 
 //
 // Syscall test (executed in a separate process)
