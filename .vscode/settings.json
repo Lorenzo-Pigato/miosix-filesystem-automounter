@@ -1,0 +1,11 @@
+{
+  "cmake.sourceDirectory": "${workspaceFolder}/miosix",
+  "cmake.buildDirectory": "${workspaceFolder}/build/vscode-miosix",
+  "cmake.configureOnOpen": true,
+  "cmake.generator": "Ninja",
+  "cmake.configureSettings": {
+    "MIOSIX_BOARD": "stm32f407vg_stm32f4discovery",
+    "CMAKE_BUILD_TYPE": "Debug",
+    "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+  }
+}

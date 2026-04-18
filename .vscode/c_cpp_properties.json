@@ -1,0 +1,41 @@
+{
+  "version": 4,
+  "configurations": [
+    {
+      "name": "Miosix STM32F407VG",
+      "compilerPath": "/usr/bin/arm-miosix-eabi-g++",
+      "intelliSenseMode": "linux-gcc-arm",
+      "cStandard": "c17",
+      "cppStandard": "c++23",
+      "compileCommands": "${workspaceFolder}/build/vscode-miosix/compile_commands.json",
+      "includePath": [
+        "${workspaceFolder}",
+        "${workspaceFolder}/miosix",
+        "${workspaceFolder}/miosix/**",
+        "${workspaceFolder}/tools/testsuite",
+        "${workspaceFolder}/tools/testsuite/**",
+        "${workspaceFolder}/templates",
+        "${workspaceFolder}/templates/**",
+        "${workspaceFolder}/examples",
+        "${workspaceFolder}/examples/**"
+      ],
+      "browse": {
+        "path": [
+          "${workspaceFolder}",
+          "${workspaceFolder}/miosix",
+          "${workspaceFolder}/tools/testsuite",
+          "${workspaceFolder}/templates",
+          "${workspaceFolder}/examples"
+        ],
+        "limitSymbolsToIncludedHeaders": false
+      },
+      "defines": [
+        "COMPILING_MIOSIX",
+        "WITH_FILESYSTEM",
+        "WITH_DEVFS",
+        "WITH_AUTOMOUNTER",
+        "_CHIP_STM32F4"
+      ]
+    }
+  ]
+}

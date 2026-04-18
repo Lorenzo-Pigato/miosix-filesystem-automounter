@@ -748,15 +748,12 @@ public:
 
     /**
      * \internal
-     * Automatically select the data speed. This routine selects the highest
-     * sustainable data transfer speed. This is done by binary search until
-     * the highest clock speed that causes no errors is found.
-     * This function as a side effect enables 4bit bus width, and clock
-     * powersave.
-     */
-     * Since clock speed is set dynamically by binary search at runtime, a
-     * corner case might be that of a clock speed which results in unreliable
-     * data transfer, that sometimes succeeds, and sometimes fail.
+     * Reduce the SDIO clock slightly after calibration.
+     * Clock calibration is done by binary search elsewhere. This helper is
+     * only used later, during normal operation, if a transfer error suggests
+     * that the selected speed is marginally too high.
+     * Since clock speed is chosen dynamically at runtime, a corner case might
+     * be that of a speed which works most of the time but occasionally fails.
      * For maximum robustness, this function is provided to reduce the clock
      * speed slightly in case a data transfer should fail after clock
      * calibration. To avoid inadvertently considering other kind of issues as
@@ -777,8 +774,8 @@ public:
     static unsigned char getRetryCount() { return retries; }
 
 private:
-    // SDIODriver needs access to these internals to run clock calibration
-    // while keeping reinit and calibration inside one locked driver operation.
+    // SDIODriver performs reinit and clock calibration while keeping its
+    // mutex locked, so it needs controlled access to these clock internals.
     friend class SDIODriver;
 
     /**
@@ -1518,9 +1515,8 @@ ssize_t SDIODriver::writeBlockNoLock(const void* buffer, size_t size, off_t wher
 
 bool SDIODriver::calibrateClockSpeedLocked()
 {
-    // During calibrationblock reads are performed directly through the locked
-    // helper so that reinit and calibration stay part of the same serialized
-    // driver operation.
+    // Calibration runs while reinitialize() is still holding the driver
+    // mutex, so probe reads must go through the no-lock helper directly.
     ClockController::clockReductionAvailable=0;
     ClockController::retries=1;
 

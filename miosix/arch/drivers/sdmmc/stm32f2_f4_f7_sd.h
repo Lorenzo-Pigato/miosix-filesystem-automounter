@@ -57,20 +57,22 @@ private:
 
     /**
      * Reinitialize the card and optionally calibrate the SDIO clock.
-     * Calibration must happen while keeping the driver serialized, but it
-     * cannot call the public readBlock() entry point because that would
-     * recurse on the same mutex.
+     * This sequence must run while holding the driver mutex, so no other
+     * SDIODriver operation can execute at the same time.
+     * When calibration is requested it cannot call the public readBlock()
+     * entry point, because that would try to lock the same mutex again.
      */
     bool reinitialize(bool calibrate);
 
     /**
-     * Clock calibration implementation used after a successful reinit.
-     * This helper must be called with mutex already locked.
+     * Clock calibration step executed after a successful reinit.
+     * This helper assumes mutex is already locked.
      */
     bool calibrateClockSpeedLocked();
 
     /**
-     * Internal block I/O helpers that assume mutex is already locked.
+     * Internal block I/O helpers used while the driver mutex is already held.
+     * They assume the caller has already locked the driver.
      */
     ssize_t readBlockNoLock(void *buffer, size_t size, off_t where);
     ssize_t writeBlockNoLock(const void *buffer, size_t size, off_t where);

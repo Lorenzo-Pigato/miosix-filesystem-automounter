@@ -1,0 +1,61 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Testsuite (Launch ELF)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "servertype": "openocd",
+      "cwd": "${workspaceFolder}/tools/testsuite",
+      "executable": "${workspaceFolder}/tools/testsuite/main.elf",
+      "gdbPath": "/usr/bin/arm-miosix-eabi-gdb",
+      "configFiles": [
+        "${workspaceFolder}/.vscode/openocd-stm32f4discovery-vscode.cfg"
+      ],
+      "openOCDLaunchCommands": [
+        "init",
+        "reset halt"
+      ],
+      "preLaunchTask": "Testsuite: main",
+      "runToEntryPoint": "main"
+    },
+    {
+      "name": "Testsuite (Attach after image.bin program)",
+      "type": "cortex-debug",
+      "request": "attach",
+      "servertype": "openocd",
+      "cwd": "${workspaceFolder}/tools/testsuite",
+      "executable": "${workspaceFolder}/tools/testsuite/main.elf",
+      "gdbPath": "/usr/bin/arm-miosix-eabi-gdb",
+      "configFiles": [
+        "${workspaceFolder}/.vscode/openocd-stm32f4discovery-vscode.cfg"
+      ],
+      "openOCDLaunchCommands": [
+        "init",
+        "reset halt"
+      ],
+      "preLaunchTask": "Testsuite: program",
+      "postAttachCommands": [
+        "monitor reset halt"
+      ]
+    },
+    {
+      "name": "Miosix (templates/simple)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "servertype": "openocd",
+      "cwd": "${workspaceFolder}/templates/simple",
+      "executable": "${workspaceFolder}/templates/simple/main.elf",
+      "gdbPath": "/usr/bin/arm-miosix-eabi-gdb",
+      "configFiles": [
+        "${workspaceFolder}/.vscode/openocd-stm32f4discovery-vscode.cfg"
+      ],
+      "openOCDLaunchCommands": [
+        "init",
+        "reset halt"
+      ],
+      "preLaunchTask": "Main (templates/simple): main",
+      "runToEntryPoint": "main"
+    }
+  ]
+}

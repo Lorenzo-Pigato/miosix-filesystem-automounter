@@ -1,0 +1,164 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Testsuite: clean",
+      "type": "shell",
+      "command": "make",
+      "args": [
+        "-C",
+        "tools/testsuite",
+        "clean",
+        "OPT_BOARD=stm32f407vg_stm32f4discovery"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "Testsuite: main",
+      "type": "shell",
+      "command": "make",
+      "args": [
+        "-C",
+        "tools/testsuite",
+        "-j4",
+        "main",
+        "OPT_BOARD=stm32f407vg_stm32f4discovery"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": [
+        "$gcc"
+      ]
+    },
+    {
+      "label": "Testsuite: image",
+      "type": "shell",
+      "command": "make",
+      "args": [
+        "-C",
+        "tools/testsuite",
+        "-j4",
+        "image",
+        "OPT_BOARD=stm32f407vg_stm32f4discovery"
+      ],
+      "problemMatcher": [
+        "$gcc"
+      ]
+    },
+    {
+      "label": "Testsuite: program",
+      "type": "shell",
+      "command": "make",
+      "args": [
+        "-C",
+        "tools/testsuite",
+        "program",
+        "OPT_BOARD=stm32f407vg_stm32f4discovery"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "Main (templates/simple): clean",
+      "type": "shell",
+      "command": "make",
+      "args": [
+        "-C",
+        "templates/simple",
+        "clean",
+        "OPT_BOARD=stm32f407vg_stm32f4discovery"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "Main (templates/simple): main",
+      "type": "shell",
+      "command": "make",
+      "args": [
+        "-C",
+        "templates/simple",
+        "-j4",
+        "main",
+        "OPT_BOARD=stm32f407vg_stm32f4discovery"
+      ],
+      "problemMatcher": [
+        "$gcc"
+      ]
+    },
+    {
+      "label": "Main (templates/simple): program",
+      "type": "shell",
+      "command": "make",
+      "args": [
+        "-C",
+        "templates/simple",
+        "program",
+        "OPT_BOARD=stm32f407vg_stm32f4discovery"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "Project: clean (path)",
+      "type": "shell",
+      "command": "make",
+      "args": [
+        "-C",
+        "${input:miosixProjectDir}",
+        "clean",
+        "OPT_BOARD=stm32f407vg_stm32f4discovery"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "Project: main (path)",
+      "type": "shell",
+      "command": "make",
+      "args": [
+        "-C",
+        "${input:miosixProjectDir}",
+        "-j4",
+        "main",
+        "OPT_BOARD=stm32f407vg_stm32f4discovery"
+      ],
+      "problemMatcher": [
+        "$gcc"
+      ]
+    },
+    {
+      "label": "Project: image (path)",
+      "type": "shell",
+      "command": "make",
+      "args": [
+        "-C",
+        "${input:miosixProjectDir}",
+        "-j4",
+        "image",
+        "OPT_BOARD=stm32f407vg_stm32f4discovery"
+      ],
+      "problemMatcher": [
+        "$gcc"
+      ]
+    },
+    {
+      "label": "Project: program (path)",
+      "type": "shell",
+      "command": "make",
+      "args": [
+        "-C",
+        "${input:miosixProjectDir}",
+        "program",
+        "OPT_BOARD=stm32f407vg_stm32f4discovery"
+      ],
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "miosixProjectDir",
+      "type": "promptString",
+      "description": "Relative path of the project directory containing the Makefile",
+      "default": "tools/testsuite"
+    }
+  ]
+}
