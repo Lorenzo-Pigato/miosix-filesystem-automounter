@@ -1394,6 +1394,9 @@ intrusive_ref_ptr<SDIODriver> SDIODriver::instance()
     return instance;
 }
 
+// Anonymous namespace used for the forward declaration of `sdioReinitLocked`
+// This helper is used only inside this file and does not need to be part of
+// the public SDIODriver interface.
 namespace
 {
     bool sdioReinitLocked(SDIODriver *self);

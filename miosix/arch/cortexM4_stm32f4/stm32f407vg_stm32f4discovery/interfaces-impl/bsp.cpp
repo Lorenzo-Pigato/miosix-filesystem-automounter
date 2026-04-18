@@ -50,7 +50,7 @@
 #include "filesystem/automounter/sd_automounter.h"
 
 #if AUTOMOUNTER_DEBUG_LOG
-#define AUTOMOUNTER_LOG(fmt, ...) printf("[Automounter/BSP] " fmt, ##__VA_ARGS__)
+#define AUTOMOUNTER_LOG(fmt, ...) printf("[BSP] " fmt, ##__VA_ARGS__)
 #else
 #define AUTOMOUNTER_LOG(fmt, ...) do { } while(0)
 #endif

@@ -24,7 +24,7 @@
 #include "filesystem/littlefs/lfs_miosix.h"
 
 #if AUTOMOUNTER_DEBUG_LOG
-#define AUTOMOUNTER_LOG(fmt, ...) printf("[SdAutomounter] " fmt, ##__VA_ARGS__)
+#define AUTOMOUNTER_LOG(fmt, ...) iprintf("[Automounter] " fmt, ##__VA_ARGS__)
 #else
 #define AUTOMOUNTER_LOG(fmt, ...) do { } while(0)
 #endif
@@ -92,7 +92,7 @@ namespace miosix
 
                 const long long elapsedNs = getTime() - startNs;
                 sdAutomounterTimingPin::low();
-                printf("[TimeLog] %s %s: %lld ns\n", event, outcome, elapsedNs);
+                iprintf("[Automounter] [Time Log] %s %s: %lld us\n", event, outcome, elapsedNs/1000);
                 finished = true;
             }
 
