@@ -165,13 +165,31 @@ void bspInit2()
     #ifdef WITH_AUTOMOUNTER
     {
         intrusive_ref_ptr<SDIODriver> sd = SDIODriver::instance();
-        intrusive_ref_ptr<DevFs> devFs=basicFilesystemSetup(intrusive_ref_ptr<Device>());
-        #ifdef AUX_SERIAL
-        devFs->addDevice(AUX_SERIAL,
-            STM32SerialBase::get<auxSerialTxPin,auxSerialRxPin,
-            auxSerialRtsPin,auxSerialCtsPin>(
-                auxSerial,auxSerialSpeed,auxSerialFlowctrl,auxSerialDma));
-        #endif //AUX_SERIAL
+        basicFilesystemSetup(intrusive_ref_ptr<Device>());
+        #ifdef WITH_DEVFS
+        intrusive_ref_ptr<DevFs> devFs = FilesystemManager::instance().getDevFs();
+        if(devFs)
+        {
+            // /dev/sda is exposed statically because the SD driver exists even
+            // when no card is mounted. The automounter is responsible only for
+            // mounting and unmounting /sd on top of that raw device.
+            //
+            // The fixed "sda" name is acceptable for the current single-device
+            // setup. If more removable block devices are added later, naming
+            // will need a more careful policy.
+            if(devFs->addDevice("sda", sd)==false)
+                AUTOMOUNTER_LOG("DevFs device /dev/sda already present\n");
+
+            #ifdef AUX_SERIAL
+            devFs->addDevice(AUX_SERIAL,
+                STM32SerialBase::get<auxSerialTxPin,auxSerialRxPin,
+                auxSerialRtsPin,auxSerialCtsPin>(
+                    auxSerial,auxSerialSpeed,auxSerialFlowctrl,auxSerialDma));
+            #endif //AUX_SERIAL
+        } else {
+            AUTOMOUNTER_LOG("DevFs unavailable, /dev/sda not created\n");
+        }
+        #endif //WITH_DEVFS
 
         #if WITH_SD_CD_PIN
         SdAutomounter::instance().configure(sd, &sdCardPresentByCd,
@@ -195,7 +213,7 @@ void bspInit2()
     }
 
     #else //WITH_AUTOMOUNTER
-    #ifdef AUX_SERIAL
+    #if defined(AUX_SERIAL) && defined(WITH_DEVFS)
     {
         intrusive_ref_ptr<DevFs> devFs=basicFilesystemSetup(SDIODriver::instance());
         devFs->addDevice(AUX_SERIAL,
@@ -203,9 +221,9 @@ void bspInit2()
             auxSerialRtsPin,auxSerialCtsPin>(
                 auxSerial,auxSerialSpeed,auxSerialFlowctrl,auxSerialDma));
     }
-    #else //AUX_SERIAL
+    #else //AUX_SERIAL && WITH_DEVFS
     basicFilesystemSetup(SDIODriver::instance());
-    #endif //AUX_SERIAL
+    #endif //AUX_SERIAL && WITH_DEVFS
     #endif //WITH_AUTOMOUNTER
     #endif //WITH_FILESYSTEM
 }

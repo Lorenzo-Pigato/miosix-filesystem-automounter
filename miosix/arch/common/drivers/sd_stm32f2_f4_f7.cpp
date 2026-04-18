@@ -132,7 +132,7 @@ static unsigned int sdioFlags;          ///< \internal SDIO status flags
  * fully complete (or on any error). For reads (waitForDma==true), both DMA TC
  * and SDIO DATAEND must have been observed; for writes, SDIO DATAEND alone suffices.
  */
-static void maybeWakeWaitingThread()
+inline static void maybeWakeWaitingThread()
 {
     if(!waiting) return;
     bool ready = waitForDma ? (dmaDone && sdioDone) : sdioDone;
