@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include "filesystem/automounter/sd_automounter.h"
+#include "util/util.h"
 
 using namespace miosix;
 
@@ -147,6 +148,21 @@ static void cmd_rm(const char *path)
     if(remove(path) != 0) iprintf("rm: %s\n", strerror(errno));
 }
 
+static void cmd_mkdir(const char *path)
+{
+    if(*path == '\0')
+    {
+        iprintf("mkdir: missing dirname\n");
+        return;
+    }
+    if(mkdir(path, 0755) != 0) iprintf("mkdir: %s\n", strerror(errno));
+}
+
+static void cmd_pwd()
+{
+    iprintf("%s\n", cwd);
+}
+
 static void cmd_enable()
 {
     SdAutomounter::instance().enable();
@@ -159,12 +175,80 @@ static void cmd_disable()
     iprintf("automounter disabled\n");
 }
 
+static void cmd_fetch()
+{
+    // Logo fits best on terminals >= 96 cols
+    iprintf("\n");
+    iprintf("0000000000000000  0000           0000     000                                 000\n");
+    iprintf("0            000  00000         00000     000                                 000\n");
+    iprintf("0           0000  000000        00000\n");
+    iprintf("0          00000  000000       000000     000      00000000      000000000    000   000     000\n");
+    iprintf("0         000000  000 000     000 000     000     000    000    000           000    000   000\n");
+    iprintf("0        0000000  000  000    00  000     000    000      000   0000          000     000 000\n");
+    iprintf("0       00000000  000  000   000  000     000   000        000    00000       000       0000\n");
+    iprintf("0      000000000  000   000 000   000     000   000        000       00000    000      00000\n");
+    iprintf("0     0000000000  000    00000    000     000    000      000          000    000     000 000\n");
+    iprintf("0    00000000000  000    00000    000     000     000    000    00     000    000    000   000\n");
+    iprintf("0000000000000000  000     000     000     000      00000000     000000000     000   000     000\n");
+    iprintf("\n");
+    iprintf("------------------------------------------------------------------------\n");
+
+    // Board & CPU
+    iprintf("  Board   : %s\n", _MIOSIX_BOARDNAME);
+    iprintf("  CPU     : %u MHz", cpuFrequency / 1000000u);
+    if(oscillatorType == OscillatorType::HSE)
+        iprintf("  (HSE %u MHz)\n", hseFrequency / 1000000u);
+    else
+        iprintf("  (HSI)\n");
+
+    // Serial
+    iprintf("  Serial  : USART%u @ %u baud\n", defaultSerial, defaultSerialSpeed);
+
+    // RAM
+    unsigned int heapFree  = MemoryProfiling::getCurrentFreeHeap();
+    unsigned int heapTotal = MemoryProfiling::getHeapSize();
+    iprintf("  Heap    : %u / %u B free\n", heapFree, heapTotal);
+
+    // Uptime
+    long long ns = getTime();
+    unsigned int secs = static_cast<unsigned int>(ns / 1000000000LL);
+    iprintf("  Uptime  : %uh %02um %02us\n", secs / 3600, (secs % 3600) / 60, secs % 60);
+
+    // Automounter + SD mount status
+    bool enabled = SdAutomounter::instance().isEnabled();
+    iprintf("  Automnt : %s\n", enabled ? "enabled" : "disabled");
+
+    struct stat rootSt, sdSt;
+    bool sdMounted = stat("/", &rootSt) == 0 && stat("/sd", &sdSt) == 0
+                     && rootSt.st_dev != sdSt.st_dev;
+    iprintf("  SD      : %s\n", sdMounted ? "mounted" : "not mounted");
+
+    iprintf("------------------------------------------------------------------------\n");
+}
+
+static void cmd_help()
+{
+    iprintf("  cd    <path>  change directory\n");
+    iprintf("  ls    [path]  list directory\n");
+    iprintf("  pwd           print working directory\n");
+    iprintf("  stat  <path>  file info\n");
+    iprintf("  cat   <path>  print file\n");
+    iprintf("  echo  <text> [> file]  write text (>> appends)\n");
+    iprintf("  touch <path>  create empty file\n");
+    iprintf("  rm    <path>  remove file\n");
+    iprintf("  mkdir <path>  create directory\n");
+    iprintf("  fetch         system info\n");
+    iprintf("  enable        enable SD automounter\n");
+    iprintf("  disable       disable SD automounter\n");
+    iprintf("  help          this message\n");
+}
+
 int main()
 {
     getcwd(cwd, sizeof(cwd));
     for(;;)
     {
-        iprintf("stm32 |%s| >> ", cwd);
+        iprintf("%s >> ", cwd);
 
         if(!fgets(line, sizeof(line), stdin)) continue;
 
@@ -181,15 +265,19 @@ int main()
             arg[sizeof(arg) - 1] = '\0';
         }
 
-        if(strcmp(line, "cd") == 0) cmd_cd(arg[0] ? arg : "/");
-        else if(strcmp(line, "ls") == 0) cmd_ls(arg);
-        else if(strcmp(line, "stat") == 0) cmd_stat(arg);
-        else if(strcmp(line, "cat") == 0) cmd_cat(arg);
-        else if(strcmp(line, "echo") == 0) cmd_echo(arg);
-        else if(strcmp(line, "touch") == 0) cmd_touch(arg);
-        else if(strcmp(line, "rm") == 0) cmd_rm(arg);
-        else if(strcmp(line, "enable") == 0) cmd_enable();
+        if     (strcmp(line, "cd")      == 0) cmd_cd(arg[0] ? arg : "/");
+        else if(strcmp(line, "ls")      == 0) cmd_ls(arg);
+        else if(strcmp(line, "pwd")     == 0) cmd_pwd();
+        else if(strcmp(line, "stat")    == 0) cmd_stat(arg);
+        else if(strcmp(line, "cat")     == 0) cmd_cat(arg);
+        else if(strcmp(line, "echo")    == 0) cmd_echo(arg);
+        else if(strcmp(line, "touch")   == 0) cmd_touch(arg);
+        else if(strcmp(line, "rm")      == 0) cmd_rm(arg);
+        else if(strcmp(line, "mkdir")   == 0) cmd_mkdir(arg);
+        else if(strcmp(line, "fetch")   == 0) cmd_fetch();
+        else if(strcmp(line, "enable")  == 0) cmd_enable();
         else if(strcmp(line, "disable") == 0) cmd_disable();
-        else iprintf("commands: cd ls stat cat echo touch rm enable disable\n");
+        else if(strcmp(line, "help")    == 0) cmd_help();
+        else iprintf("unknown command - try 'help'\n");
     }
 }
