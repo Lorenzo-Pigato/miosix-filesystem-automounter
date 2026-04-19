@@ -20,7 +20,7 @@
 
 /// Enable automounter debug logs.
 #ifndef AUTOMOUNTER_DEBUG_LOG
-#define AUTOMOUNTER_DEBUG_LOG 1
+#define AUTOMOUNTER_DEBUG_LOG 0
 #endif
 
 /// Polling period for card detection, in milliseconds.
