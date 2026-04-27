@@ -128,32 +128,18 @@ static const unsigned char sdVoltage=30; //Board powered @ 3.0V
 #error "SD_AUTOMOUNTER_HARDWARE must be 0 (SDIO) or 1 (CD pin)"
 #endif
 
-// Hardware CD logic configuration.
-#define SD_AUTOMOUNTER_CD_ACTIVE_LOW  0
-#define SD_AUTOMOUNTER_CD_ACTIVE_HIGH 1
-#ifndef SD_AUTOMOUNTER_CD_POLARITY
-#define SD_AUTOMOUNTER_CD_POLARITY SD_AUTOMOUNTER_CD_ACTIVE_LOW
-#endif
-
-// Hardware CD input mode.
-#define SD_AUTOMOUNTER_CD_PULL_NONE  0
-#define SD_AUTOMOUNTER_CD_PULL_UP    1
-#define SD_AUTOMOUNTER_CD_PULL_DOWN  2
-#ifndef SD_AUTOMOUNTER_CD_PULL
-#define SD_AUTOMOUNTER_CD_PULL SD_AUTOMOUNTER_CD_PULL_UP
-#endif
-
-// Optional short form to configure the CD pin with one macro:
 #if WITH_SD_CD_PIN
-#define SD_AUTOMOUNTER_CD_GPIO Gpio<PC,1>
-#endif
+enum class SdAutomounterCdPolarity { ActiveLow, ActiveHigh };
 
-#if WITH_SD_CD_PIN
-#if defined(SD_AUTOMOUNTER_CD_GPIO)
-using sdAutomounterCardDetectPin = SD_AUTOMOUNTER_CD_GPIO;
-#else
-#error "Define SD_AUTOMOUNTER_CD_GPIO when WITH_SD_CD_PIN is 1"
-#endif
+// Hardware CD logic configuration for this board.
+constexpr auto sdAutomounterCdPolarity = SdAutomounterCdPolarity::ActiveLow;
+constexpr auto sdAutomounterCdMode = Mode::INPUT_PULL_UP;
+using sdAutomounterCardDetectPin = Gpio<PC,1>;
+
+static_assert(sdAutomounterCdMode == Mode::INPUT
+           || sdAutomounterCdMode == Mode::INPUT_PULL_UP
+           || sdAutomounterCdMode == Mode::INPUT_PULL_DOWN,
+           "sdAutomounterCdMode must use a supported input mode");
 #endif
 
 // Optional measurement pin used by the SD automounter timing hook.
@@ -163,9 +149,5 @@ using sdAutomounterCardDetectPin = SD_AUTOMOUNTER_CD_GPIO;
 #if defined(SD_AUTOMOUNTER_TIMING_GPIO)
 using sdAutomounterTimingPin = SD_AUTOMOUNTER_TIMING_GPIO;
 #endif
-
-/**
- * \}
- */
 
 } //namespace miosix

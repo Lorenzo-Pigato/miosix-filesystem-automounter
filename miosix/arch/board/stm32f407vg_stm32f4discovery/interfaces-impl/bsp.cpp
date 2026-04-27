@@ -92,15 +92,7 @@ void IRQbspInit()
             defaultSerialFlowctrl,defaultSerialDma));
 
     #if defined(WITH_AUTOMOUNTER) && WITH_SD_CD_PIN
-    #if SD_AUTOMOUNTER_CD_PULL==SD_AUTOMOUNTER_CD_PULL_UP
-    sdAutomounterCardDetectPin::mode(Mode::INPUT_PULL_UP);
-    #elif SD_AUTOMOUNTER_CD_PULL==SD_AUTOMOUNTER_CD_PULL_DOWN
-    sdAutomounterCardDetectPin::mode(Mode::INPUT_PULL_DOWN);
-    #elif SD_AUTOMOUNTER_CD_PULL==SD_AUTOMOUNTER_CD_PULL_NONE
-    sdAutomounterCardDetectPin::mode(Mode::INPUT);
-    #else
-    #error "Invalid SD_AUTOMOUNTER_CD_PULL value"
-    #endif
+    sdAutomounterCardDetectPin::mode(sdAutomounterCdMode);
     #endif
 }
 
@@ -143,13 +135,10 @@ static bool sdCardPresentBySdio()
 static bool sdCardPresentByCd()
 {
     bool cd = sdAutomounterCardDetectPin::value() != 0;
-    #if SD_AUTOMOUNTER_CD_POLARITY==SD_AUTOMOUNTER_CD_ACTIVE_LOW
-    return !cd;
-    #elif SD_AUTOMOUNTER_CD_POLARITY==SD_AUTOMOUNTER_CD_ACTIVE_HIGH
-    return cd;
-    #else
-    #error "Invalid SD_AUTOMOUNTER_CD_POLARITY value"
-    #endif
+    if constexpr(sdAutomounterCdPolarity == SdAutomounterCdPolarity::ActiveLow)
+        return !cd;
+    else
+        return cd;
 }
 #endif
 #endif //WITH_AUTOMOUNTER
