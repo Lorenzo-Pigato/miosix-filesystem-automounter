@@ -85,6 +85,18 @@ namespace miosix
         int samplesCount;
     };
 
+    #if WITH_SD_CD_PIN
+    /// Read hardware card-detect pin and apply board-configured polarity.
+    inline bool sdCardPresentByCd()
+    {
+        bool cd = sdAutomounterCardDetectPin::value() != 0;
+        if constexpr(sdAutomounterCdPolarity == SdAutomounterCdPolarity::ActiveLow)
+            return !cd;
+        else
+            return cd;
+    }
+    #endif
+
     /**
      * \brief Polling-based SD card automounter.
      *
@@ -105,7 +117,17 @@ namespace miosix
         static SdAutomounter &instance();
 
         /**
-         * Configure. Call once from BSP before enable().
+         * Board-agnostic configure. Selects the probe strategy (hardware CD or
+         * SDIO software probing) based on WITH_SD_CD_PIN and registers the block
+         * device in DevFs. Call once from BSP before enable().
+         *
+         * \param storage storage device used to mount the filesystem
+         */
+        void configure(intrusive_ref_ptr<Device> storage);
+
+        /**
+         * Configure with explicit probe function. Use when the default probe
+         * strategy is not suitable.
          *
          * \param storage storage device used to mount the filesystem
          * \param detect card detect function (polling); must not be nullptr
@@ -119,7 +141,8 @@ namespace miosix
                         bool reinitBeforeMount = SD_AUTOMOUNTER_REINIT_BEFORE_MOUNT_DEFAULT);
 
         /**
-         * Enable/disable automounter at runtime.
+         * Enable/disable automounter at runtime. enable() also registers the
+         * storage device in DevFs (if WITH_DEVFS is enabled).
          */
         void enable();
         void disable();
@@ -169,6 +192,13 @@ namespace miosix
          */
         bool probeCardPresence() const;
 
+        #if WITH_SD_CD_PIN==0
+        /// SDIO software probe with reinit backoff. Uses this->storage directly.
+        bool sdioProbePresence();
+        /// Static trampoline so sdioProbePresence() fits the CardProbeFunction signature.
+        static bool sdioProbeStub();
+        #endif
+
         /**
          * \brief Ensure that the /sd mount point exists.
          *
@@ -211,6 +241,9 @@ namespace miosix
 
         SdAutomounterPollingState<> pollingState;
         bool sdMounted;
+        #if WITH_SD_CD_PIN==0
+        int sdioReinitCountdown;
+        #endif
     };
 
 } // namespace miosix

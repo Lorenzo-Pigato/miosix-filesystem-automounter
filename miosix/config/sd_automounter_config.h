@@ -72,3 +72,8 @@
 #ifndef SD_AUTOMOUNTER_SDIO_REINIT_BACKOFF_POLLS
 #define SD_AUTOMOUNTER_SDIO_REINIT_BACKOFF_POLLS 7
 #endif
+
+/// DevFs name for the block device exposed by the automounter.
+#ifndef SD_AUTOMOUNTER_BLOCK_DEVICE_NAME
+#define SD_AUTOMOUNTER_BLOCK_DEVICE_NAME "sda"
+#endif

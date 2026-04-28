@@ -1397,9 +1397,8 @@ intrusive_ref_ptr<SDIODriver> SDIODriver::instance()
     return instance;
 }
 
-// Anonymous namespace used for the forward declaration of `sdioReinitLocked`
-// This helper is used only inside this file and does not need to be part of
-// the public SDIODriver interface.
+// Forward declaration: sdioReinitLocked is defined later in the anonymous
+// namespace but used by reinitialize() above.
 namespace
 {
     bool sdioReinitLocked(SDIODriver *self);
@@ -1408,11 +1407,6 @@ namespace
 ssize_t SDIODriver::readBlock(void* buffer, size_t size, off_t where)
 {
     Lock<KernelMutex> l(mutex);
-    return readBlockNoLock(buffer, size, where);
-}
-
-ssize_t SDIODriver::readBlockNoLock(void* buffer, size_t size, off_t where)
-{
     if(where % 512 || size % 512) return -EFAULT;
     unsigned int lba=where/512;
     unsigned int nSectors=size/512;
@@ -1462,11 +1456,6 @@ ssize_t SDIODriver::readBlockNoLock(void* buffer, size_t size, off_t where)
 ssize_t SDIODriver::writeBlock(const void* buffer, size_t size, off_t where)
 {
     Lock<KernelMutex> l(mutex);
-    return writeBlockNoLock(buffer, size, where);
-}
-
-ssize_t SDIODriver::writeBlockNoLock(const void* buffer, size_t size, off_t where)
-{
     if(where % 512 || size % 512) return -EFAULT;
     unsigned int lba=where/512;
     unsigned int nSectors=size/512;
@@ -1513,10 +1502,9 @@ ssize_t SDIODriver::writeBlockNoLock(const void* buffer, size_t size, off_t wher
     return -EBADF;
 }
 
-bool SDIODriver::calibrateClockSpeedLocked()
+bool SDIODriver::calibrateClockSpeed()
 {
-    // Calibration runs while reinitialize() is still holding the driver
-    // mutex, so probe reads must go through the no-lock helper directly.
+    // Mutex is recursive: readBlock() re-acquires it safely from this context.
     ClockController::clockReductionAvailable=0;
     ClockController::retries=1;
 
@@ -1538,7 +1526,7 @@ bool SDIODriver::calibrateClockSpeedLocked()
     //wires to the SD card slot), and a single-attempt read would cause
     //calibration to fail unnecessarily.
     ClockController::retries=ClockController::MAX_RETRY;
-    if(readBlockNoLock(reinterpret_cast<unsigned char*>(reference),512,0)!=512)
+    if(readBlock(reinterpret_cast<unsigned char*>(reference),512,0)!=512)
     {
         ClockController::clockReductionAvailable=ClockController::MAX_ALLOWED_REDUCTIONS;
         return false;
@@ -1551,7 +1539,7 @@ bool SDIODriver::calibrateClockSpeedLocked()
         selected=(minFreq+maxFreq)/2;
         DBG("Trying CLKCR=%d\n",selected);
         ClockController::setClockSpeed(selected);
-        if(readBlockNoLock(reinterpret_cast<unsigned char*>(probe),512,0)==512
+        if(readBlock(reinterpret_cast<unsigned char*>(probe),512,0)==512
         && std::memcmp(probe, reference, sizeof(reference))==0)
             minFreq=selected;
         else maxFreq=selected;
@@ -1559,14 +1547,14 @@ bool SDIODriver::calibrateClockSpeedLocked()
 
     bool success=false;
     ClockController::setClockSpeed(maxFreq);
-    if(readBlockNoLock(reinterpret_cast<unsigned char*>(probe),512,0)==512
+    if(readBlock(reinterpret_cast<unsigned char*>(probe),512,0)==512
     && std::memcmp(probe, reference, sizeof(reference))==0)
     {
         DBG("Optimal CLKCR=%d\n",maxFreq);
         success=true;
     } else {
         ClockController::setClockSpeed(minFreq);
-        success=readBlockNoLock(reinterpret_cast<unsigned char*>(probe),512,0)==512
+        success=readBlock(reinterpret_cast<unsigned char*>(probe),512,0)==512
              && std::memcmp(probe, reference, sizeof(reference))==0;
         DBG("Optimal CLKCR=%d\n",minFreq);
     }
@@ -1581,7 +1569,7 @@ bool SDIODriver::reinitialize(bool calibrate)
     Lock<KernelMutex> l(mutex);
     if(sdioReinitLocked(this)==false) return false;
     if(calibrate==false) return true;
-    return calibrateClockSpeedLocked();
+    return calibrateClockSpeed();
 }
 
 namespace

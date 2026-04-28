@@ -133,7 +133,28 @@ namespace miosix
           worker(nullptr),
           pollingState(false),
           sdMounted(false)
+          #if WITH_SD_CD_PIN==0
+          , sdioReinitCountdown(0)
+          #endif
+
     {
+    }
+
+    void SdAutomounter::configure(intrusive_ref_ptr<Device> storage)
+    {
+        #if WITH_SD_CD_PIN
+        configure(storage, &sdCardPresentByCd,
+                  SD_AUTOMOUNTER_POLL_MS,
+                  SD_AUTOMOUNTER_REINIT_BEFORE_MOUNT_WITH_CD);
+        AUTOMOUNTER_LOG("Mode: hardware CD\n");
+        #else
+        // In SDIO probing mode, the probe already performs successful readBlock()
+        // calls, so reinit before mount would disrupt the working state.
+        configure(storage, &sdioProbeStub,
+                  SD_AUTOMOUNTER_POLL_MS,
+                  SD_AUTOMOUNTER_REINIT_BEFORE_MOUNT_WITH_SDIO_PROBE);
+        AUTOMOUNTER_LOG("Mode: SDIO software probing\n");
+        #endif
     }
 
     void SdAutomounter::configure(intrusive_ref_ptr<Device> storage, CardProbeFunction detect,
@@ -183,6 +204,27 @@ namespace miosix
 
     void SdAutomounter::enable()
     {
+        if (!configured.load() || !storage)
+        {
+            AUTOMOUNTER_LOG("Enable requested before a valid configure()\n");
+            return;
+        }
+
+        #ifdef WITH_DEVFS
+        {
+            intrusive_ref_ptr<DevFs> devFs = FilesystemManager::instance().getDevFs();
+            if(devFs)
+            {
+                if(devFs->addDevice(SD_AUTOMOUNTER_BLOCK_DEVICE_NAME, storage)==false)
+                    AUTOMOUNTER_LOG("DevFs: " SD_AUTOMOUNTER_BLOCK_DEVICE_NAME " already present\n");
+            }
+            else
+            {
+                AUTOMOUNTER_LOG("DevFs unavailable, " SD_AUTOMOUNTER_BLOCK_DEVICE_NAME " not created\n");
+            }
+        }
+        #endif
+
         enabled.store(true);
         AUTOMOUNTER_LOG("Enabled\n");
 
@@ -228,6 +270,35 @@ namespace miosix
     {
         return detect();
     }
+
+    #if WITH_SD_CD_PIN==0
+    bool SdAutomounter::sdioProbePresence()
+    {
+        static unsigned char buf[512];
+
+        if (sdioReinitCountdown > 0)
+            sdioReinitCountdown--;
+
+        ssize_t r = storage->readBlock(buf, sizeof(buf), 0);
+        if (r == 512)
+            return true;
+
+        // Reinit only after the backoff expires to avoid reinitializing on every
+        // poll cycle when no card is present.
+        if (sdioReinitCountdown == 0)
+        {
+            storage->ioctl(IOCTL_REINIT, nullptr);
+            sdioReinitCountdown = SD_AUTOMOUNTER_SDIO_REINIT_BACKOFF_POLLS;
+        }
+
+        return false;
+    }
+
+    bool SdAutomounter::sdioProbeStub()
+    {
+        return instance().sdioProbePresence();
+    }
+    #endif
 
     bool SdAutomounter::ensureSdMountpoint()
     {
