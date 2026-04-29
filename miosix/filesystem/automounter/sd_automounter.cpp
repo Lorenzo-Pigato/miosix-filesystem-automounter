@@ -378,13 +378,12 @@ namespace miosix
         }
 
         if (!ensureSdMountpoint()) return false;
-        if (Thread::testTerminate()) return false;
 
         if (reinitBeforeMount && storage)
         {
             // Before probing a filesystem, bring the card back to a known
             // transfer state and let the driver recalibrate its final bus
-            // width/clock.
+            // width and clock.
             //
             // Raw presence probing alone is not enough to
             // guarantee that the subsequent mount sees consistent data.
@@ -394,11 +393,9 @@ namespace miosix
                 AUTOMOUNTER_LOG("Storage reinit failed (%s)\n",
                             errnoName(reinitResult));
         }
-        if (Thread::testTerminate()) return false;
 
         intrusive_ref_ptr<FileBase> disk;
         if (openDisk(disk) < 0) return false;
-        if (Thread::testTerminate()) return false;
 
         // Try all enabled filesystems in the same order used at boot.
         if (tryMountFat32(disk))
@@ -407,7 +404,6 @@ namespace miosix
             AUTOMOUNTER_LOG("Mounted /sd using FAT32\n");
             return true;
         }
-        if (Thread::testTerminate()) return false;
 
         if (tryMountLittleFs(disk))
         {
