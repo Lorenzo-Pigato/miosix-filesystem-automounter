@@ -62,11 +62,6 @@ private:
      */
     bool reinitialize(bool calibrate);
 
-    /**
-     * Clock calibration step executed after a successful reinit.
-     */
-    bool calibrateClockSpeed();
-
     KernelMutex mutex{MutexOptions::RECURSIVE};
 };
 
