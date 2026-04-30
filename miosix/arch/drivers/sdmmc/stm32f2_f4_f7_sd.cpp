@@ -748,9 +748,13 @@ public:
 
     /**
      * \internal
-     * Automatically select the highest sustainable data speed.
-     * This routine performs a binary search and accepts a candidate speed only
-     * if a block read succeeds and returns the expected payload.
+     * Automatically select the data speed. This routine selects the highest
+     * sustainable data transfer speed by binary search and accepts a candidate
+     * speed only if repeated block reads succeed and return the expected
+     * payload.
+     *
+     * As a side effect, this function enables 4bit bus width and clock
+     * powersave.
      */
     static bool calibrateClockSpeed(SDIODriver *sdio);
 
@@ -773,10 +777,9 @@ public:
 
     /**
      * \internal
-     * Read and write operation do retry during normal use for robustness, but
-     * during clock claibration they must not retry for speed reasons. This
-     * member function returns 1 during clock claibration and MAX_RETRY during
-     * normal use.
+     * Read and write operations retry during normal use for robustness. During
+     * speed probing each read uses a single attempt, so calibration does not
+     * accept a marginal clock just because a later retry happened to succeed.
      */
     static unsigned char getRetryCount() { return retries; }
 
@@ -824,7 +827,6 @@ bool ClockController::calibrateClockSpeed(SDIODriver *sdio)
     // reduction after transfer errors. Keep it disabled while searching or the
     // calibration result would become self-invalidating.
     clockReductionAvailable=0;
-    retries=1;
 
     DBG("Automatic speed calibration\n");
     unsigned int reference[512/sizeof(unsigned int)];
@@ -832,43 +834,55 @@ bool ClockController::calibrateClockSpeed(SDIODriver *sdio)
     unsigned int minFreq=CLOCK_400KHz;
     unsigned int maxFreq=CLOCK_MAX;
     unsigned int selected;
+    bool success=false;
+    const unsigned char calibrationProbeReads=2;
 
     // First capture a known-good reference block at 400kHz. Some unstable
     // speeds can complete a transfer without protocol errors while still
     // returning corrupted payload, so calibration must validate data too.
+    // This low-speed reference read may use normal retries because it is
+    // not testing the upper bus-speed limit.
     setClockSpeed(minFreq);
     retries=MAX_RETRY;
     if(sdio->readBlock(reinterpret_cast<unsigned char*>(reference),512,0)!=512)
     {
-        retries=MAX_RETRY;
         clockReductionAvailable=MAX_ALLOWED_REDUCTIONS;
         return false;
     }
-    retries=3;
+
+    // Candidate reads must be single-shot and repeated explicitly: accepting a
+    // speed because one retry succeeded would select a marginal clock, while a
+    // single successful read would not prove that the selected clock is stable.
+    retries=1;
+    auto clockCandidateIsStable=[&]() {
+        for(unsigned int i=0;i<calibrationProbeReads;i++)
+        {
+            if(sdio->readBlock(reinterpret_cast<unsigned char*>(probe),512,0)!=512
+            || std::memcmp(probe, reference, sizeof(reference))!=0)
+                return false;
+        }
+        return true;
+    };
 
     while(minFreq-maxFreq>1)
     {
         selected=(minFreq+maxFreq)/2;
         DBG("Trying CLKCR=%d\n",selected);
         setClockSpeed(selected);
-        if(sdio->readBlock(reinterpret_cast<unsigned char*>(probe),512,0)==512
-        && std::memcmp(probe, reference, sizeof(reference))==0)
-            minFreq=selected;
+        if(clockCandidateIsStable()) minFreq=selected;
         else maxFreq=selected;
     }
     //Last round of algorithm
-    bool success=false;
     setClockSpeed(maxFreq);
-    if(sdio->readBlock(reinterpret_cast<unsigned char*>(probe),512,0)==512
-    && std::memcmp(probe, reference, sizeof(reference))==0)
+    success=clockCandidateIsStable();
+    if(success)
     {
         DBG("Optimal CLKCR=%d\n",maxFreq);
-        success=true;
     } else {
         setClockSpeed(minFreq);
-        success=sdio->readBlock(reinterpret_cast<unsigned char*>(probe),512,0)==512
-             && std::memcmp(probe, reference, sizeof(reference))==0;
-        DBG("Optimal CLKCR=%d\n",minFreq);
+        success=clockCandidateIsStable();
+        if(success) DBG("Optimal CLKCR=%d\n",minFreq);
+        else DBGERR("Automatic speed calibration failed\n");
     }
 
     clockReductionAvailable=MAX_ALLOWED_REDUCTIONS;
